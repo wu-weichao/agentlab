@@ -1,0 +1,11 @@
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  base_url: https://api.openai.com/v1
+  api_key: "{your-openai-api-key}"
+  temperature: 0.7
+
+chat:
+  system_prompt: |
+    You are a helpful AI assistant.
+  max_history_messages: 20
