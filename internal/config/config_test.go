@@ -6,80 +6,37 @@ import (
 	"testing"
 )
 
-func TestLoadUsesConfigDefaults(t *testing.T) {
+func TestLoadReadsPromptTemplateConfig(t *testing.T) {
 	dir := t.TempDir()
-	path := writeConfigFile(t, dir, ""+
-		"llm:\n"+
-		"  provider: openai\n"+
-		"  model: gpt-4o-mini\n"+
-		"  base_url: https://api.openai.com/v1\n"+
-		"  api_key: config-key\n"+
-		"  temperature: 0.5\n"+
-		"chat:\n"+
-		"  system_prompt: test prompt\n"+
-		"  max_history_messages: 10\n")
+	path := writeConfigFile(t, dir, validConfigYAML(
+		"你是{{role.name}}，职责是{{role.goal}}。",
+		"AI Agent 学习助理",
+		"帮助用户理解 Agent",
+		"简洁",
+		"中文",
+	))
 
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
-	}
-	if cfg.LLM.APIKey != "config-key" {
-		t.Fatalf("expected config api key, got %q", cfg.LLM.APIKey)
-	}
-}
-
-func TestLoadReadsAllConfigFields(t *testing.T) {
-	dir := t.TempDir()
-	path := writeConfigFile(t, dir, ""+
-		"llm:\n"+
-		"  provider: openai\n"+
-		"  model: gpt-4.1-mini\n"+
-		"  base_url: https://api.example.com/v1\n"+
-		"  api_key: real-key\n"+
-		"  temperature: 0.3\n"+
-		"chat:\n"+
-		"  system_prompt: production prompt\n"+
-		"  max_history_messages: 32\n")
-
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-	if cfg.LLM.Provider != "openai" {
-		t.Fatalf("expected provider from config, got %q", cfg.LLM.Provider)
-	}
-	if cfg.LLM.Model != "gpt-4.1-mini" {
-		t.Fatalf("expected model from config, got %q", cfg.LLM.Model)
-	}
-	if cfg.LLM.BaseURL != "https://api.example.com/v1" {
-		t.Fatalf("expected base url from config, got %q", cfg.LLM.BaseURL)
 	}
 	if cfg.LLM.APIKey != "real-key" {
-		t.Fatalf("expected api key from config, got %q", cfg.LLM.APIKey)
+		t.Fatalf("expected config api key, got %q", cfg.LLM.APIKey)
 	}
-	if cfg.LLM.Temperature != 0.3 {
-		t.Fatalf("expected temperature from config, got %v", cfg.LLM.Temperature)
+	if cfg.Chat.Prompt.Template != "你是{{role.name}}，职责是{{role.goal}}。\n" {
+		t.Fatalf("unexpected template: %q", cfg.Chat.Prompt.Template)
 	}
-	if cfg.Chat.SystemPrompt != "production prompt" {
-		t.Fatalf("expected system prompt from config, got %q", cfg.Chat.SystemPrompt)
+	if cfg.Chat.Prompt.Role.Name != "AI Agent 学习助理" {
+		t.Fatalf("unexpected role name: %q", cfg.Chat.Prompt.Role.Name)
 	}
-	if cfg.Chat.MaxHistoryMessages != 32 {
-		t.Fatalf("expected history size from config, got %d", cfg.Chat.MaxHistoryMessages)
+	if cfg.Chat.Prompt.Context.Language != "中文" {
+		t.Fatalf("unexpected language: %q", cfg.Chat.Prompt.Context.Language)
 	}
 }
 
 func TestValidateRejectsMissingAPIKey(t *testing.T) {
-	cfg := &Config{
-		LLM: LLMConfig{
-			Provider: "openai",
-			Model:    "gpt-4o-mini",
-			BaseURL:  "https://api.openai.com/v1",
-		},
-		Chat: ChatConfig{
-			SystemPrompt:       "prompt",
-			MaxHistoryMessages: 10,
-		},
-	}
+	cfg := validConfig()
+	cfg.LLM.APIKey = ""
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
@@ -87,22 +44,86 @@ func TestValidateRejectsMissingAPIKey(t *testing.T) {
 }
 
 func TestValidateRejectsPlaceholderAPIKey(t *testing.T) {
-	cfg := &Config{
-		LLM: LLMConfig{
-			Provider: "openai",
-			Model:    "gpt-4o-mini",
-			BaseURL:  "https://api.openai.com/v1",
-			APIKey:   "{your-openai-api-key}",
-		},
-		Chat: ChatConfig{
-			SystemPrompt:       "prompt",
-			MaxHistoryMessages: 10,
-		},
-	}
+	cfg := validConfig()
+	cfg.LLM.APIKey = "{your-openai-api-key}"
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error for placeholder api key")
 	}
+}
+
+func TestValidateRejectsMissingPromptTemplate(t *testing.T) {
+	cfg := validConfig()
+	cfg.Chat.Prompt.Template = ""
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for missing prompt template")
+	}
+}
+
+func TestValidateRejectsEmptyStandardVariable(t *testing.T) {
+	cfg := validConfig()
+	cfg.Chat.Prompt.Role.Name = " "
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for empty role.name")
+	}
+}
+
+func TestValidateRejectsMissingTemplateVariable(t *testing.T) {
+	cfg := validConfig()
+	cfg.Chat.Prompt.Template = "你是{{role.name}}，目标是{{role.missing}}。"
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for missing template variable")
+	}
+}
+
+func validConfig() *Config {
+	return &Config{
+		LLM: LLMConfig{
+			Provider:    "openai",
+			Model:       "gpt-4o-mini",
+			BaseURL:     "https://api.openai.com/v1",
+			APIKey:      "real-key",
+			Temperature: 0.5,
+		},
+		Chat: ChatConfig{
+			MaxHistoryMessages: 10,
+			Prompt: PromptConfig{
+				Template: "你是{{role.name}}，请使用{{context.language}}回答。",
+				Role: PromptRoleConfig{
+					Name:  "AI Agent 学习助理",
+					Goal:  "帮助用户理解 Agent",
+					Style: "简洁",
+				},
+				Context: PromptContextConfig{
+					Language: "中文",
+				},
+			},
+		},
+	}
+}
+
+func validConfigYAML(template string, roleName string, roleGoal string, roleStyle string, language string) string {
+	return "" +
+		"llm:\n" +
+		"  provider: openai\n" +
+		"  model: gpt-4o-mini\n" +
+		"  base_url: https://api.openai.com/v1\n" +
+		"  api_key: real-key\n" +
+		"  temperature: 0.5\n" +
+		"chat:\n" +
+		"  max_history_messages: 10\n" +
+		"  prompt:\n" +
+		"    template: |\n" +
+		"      " + template + "\n" +
+		"    role:\n" +
+		"      name: " + roleName + "\n" +
+		"      goal: " + roleGoal + "\n" +
+		"      style: " + roleStyle + "\n" +
+		"    context:\n" +
+		"      language: " + language + "\n"
 }
 
 func writeConfigFile(t *testing.T, dir string, content string) string {

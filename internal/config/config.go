@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"agentlab/internal/prompt"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -26,8 +28,27 @@ type LLMConfig struct {
 
 // ChatConfig 描述本地对话行为相关的配置项。
 type ChatConfig struct {
-	SystemPrompt       string `yaml:"system_prompt"`
-	MaxHistoryMessages int    `yaml:"max_history_messages"`
+	MaxHistoryMessages int          `yaml:"max_history_messages"`
+	Prompt             PromptConfig `yaml:"prompt"`
+}
+
+// PromptConfig 定义 system prompt 的模板和结构化变量。
+type PromptConfig struct {
+	Template string              `yaml:"template"`
+	Role     PromptRoleConfig    `yaml:"role"`
+	Context  PromptContextConfig `yaml:"context"`
+}
+
+// PromptRoleConfig 定义角色名称、目标和风格。
+type PromptRoleConfig struct {
+	Name  string `yaml:"name"`
+	Goal  string `yaml:"goal"`
+	Style string `yaml:"style"`
+}
+
+// PromptContextConfig 定义通用上下文参数。
+type PromptContextConfig struct {
+	Language string `yaml:"language"`
 }
 
 // Load 从本地 YAML 文件读取并校验聊天配置。
@@ -64,11 +85,27 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.LLM.BaseURL) == "" {
 		return errors.New("llm.base_url is required")
 	}
-	if strings.TrimSpace(c.Chat.SystemPrompt) == "" {
-		return errors.New("chat.system_prompt is required")
-	}
 	if c.Chat.MaxHistoryMessages <= 0 {
 		return errors.New("chat.max_history_messages must be greater than 0")
+	}
+	if strings.TrimSpace(c.Chat.Prompt.Template) == "" {
+		return errors.New("chat.prompt.template is required")
+	}
+
+	requiredVariables := map[string]string{
+		"role.name":        c.Chat.Prompt.Role.Name,
+		"role.goal":        c.Chat.Prompt.Role.Goal,
+		"role.style":       c.Chat.Prompt.Role.Style,
+		"context.language": c.Chat.Prompt.Context.Language,
+	}
+	for key, value := range requiredVariables {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s is required", key)
+		}
+	}
+
+	if err := prompt.Validate(c.Chat.Prompt.Template, c.Chat.Prompt.VariableMap()); err != nil {
+		return fmt.Errorf("validate chat.prompt.template: %w", err)
 	}
 
 	switch strings.ToLower(strings.TrimSpace(c.LLM.Provider)) {
@@ -81,6 +118,16 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// VariableMap 返回 Prompt 模板可用的标准变量。
+func (c PromptConfig) VariableMap() map[string]string {
+	return map[string]string{
+		"role.name":        strings.TrimSpace(c.Role.Name),
+		"role.goal":        strings.TrimSpace(c.Role.Goal),
+		"role.style":       strings.TrimSpace(c.Role.Style),
+		"context.language": strings.TrimSpace(c.Context.Language),
+	}
 }
 
 // isPlaceholderValue 用于识别示例配置中的占位值，避免误当成真实密钥使用。

@@ -13,6 +13,7 @@ import (
 	"agentlab/internal/app"
 	"agentlab/internal/config"
 	"agentlab/internal/llm"
+	"agentlab/internal/prompt"
 	"agentlab/internal/session"
 
 	"github.com/spf13/cobra"
@@ -61,13 +62,21 @@ func newChatCommand(configPath *string) *cobra.Command {
 				return err
 			}
 			log.Printf("[cli] 配置加载成功 provider=%s model=%s base_url=%s max_history=%d", cfg.LLM.Provider, cfg.LLM.Model, cfg.LLM.BaseURL, cfg.Chat.MaxHistoryMessages)
+			log.Printf("[cli] 开始渲染 prompt template variables=%d", len(cfg.Chat.Prompt.VariableMap()))
+
+			renderedPrompt, err := prompt.Render(cfg.Chat.Prompt.Template, cfg.Chat.Prompt.VariableMap())
+			if err != nil {
+				log.Printf("[cli] prompt 渲染失败: %v", err)
+				return fmt.Errorf("render prompt template: %w", err)
+			}
+			log.Printf("[cli] prompt 渲染成功 length=%d", len(renderedPrompt))
 
 			client, err := buildClient(cfg)
 			if err != nil {
 				return err
 			}
 
-			sess := session.New(cfg.Chat.SystemPrompt)
+			sess := session.New(renderedPrompt)
 			bot := app.NewChatBot(client, sess)
 
 			fmt.Println("AI Agent Lab ChatBot")
