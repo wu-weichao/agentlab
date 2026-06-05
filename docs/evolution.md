@@ -67,6 +67,42 @@
 - 不引入 Tool Calling、长期记忆、RAG、Workflow、Multi-Agent
 
 下一步：
-- 实现 `max_history_messages` 驱动的短期记忆裁剪
+- 实现受 `chat.context.*` 控制的短期上下文裁剪
 - 在上下文增长后引入更稳的裁剪或摘要策略
 - 再进入 Tool Calling 和更完整的 Agent Runtime 演进
+
+## v0.0.3 context-window-control
+
+目标：在现有 Chat Runtime 基础上，引入受预算控制的短期上下文治理能力，通过“最近原文保留 + 单份滚动摘要”解决长对话膨胀问题。
+
+新增：
+- `chat.context.max_chars`、`chat.context.keep_recent_turns`、`chat.context.summary_max_chars`、`chat.context.enable_rolling_summary` 配置
+- `internal/contextwindow` 模块，负责上下文预算估算、完整轮次裁剪和滚动摘要更新
+- 内部 `summary` 语义消息，并在发给模型前渲染为 `system` 风格消息
+- 基于 LLM 的结构化滚动摘要生成与二次压缩
+- `request_id` 贯穿 `chatbot -> summary -> llm/openai` 的日志链路
+
+调整：
+- 移除 `chat.max_history_messages`，上下文控制只使用 `chat.context.*`
+- 会话状态从单一消息切片调整为 `systemPrompt + rollingSummary + recentMessages`
+- `keep_recent_turns` 从硬保留改为优先保留；超预算时允许继续缩小近期窗口，但至少保留最近 1 轮完整对话和当前用户输入
+- 当插入摘要后仍超预算时，继续压缩已有摘要并重试一次上下文构建
+- `history` 输出现在能区分 `summary` 与原始消息，`clear` 同时清空摘要和近期历史
+
+关键决策：
+- 预算单位首版仍使用字符数估算，不引入 provider 级精确 token 统计
+- 裁剪单位按完整 `user + assistant` 轮次进行，不拆半轮
+- 滚动摘要使用 LLM 做真实归纳，而不是规则摘录
+- 只维护单份滚动摘要，不引入多摘要层级或长期记忆
+- 通过 `request_id` 把单次对话中的裁剪、摘要、主请求串成一条可观测链路
+
+当前边界：
+- 只解决单会话短期上下文预算、裁剪、摘要和日志可观测性
+- 不支持跨会话持久化记忆、RAG、Embedding 检索、多级摘要树
+- 不支持用户手动编辑摘要或按重要性排序裁剪
+- 仍不引入 Tool Calling、Workflow、Multi-Agent
+
+下一步：
+- 评估滚动摘要的质量与成本，决定是否拆出独立 summarizer 配置
+- 继续收紧上下文预算策略，例如更精细的最小保留规则和摘要压缩阈值
+- 在上下文治理稳定后再进入 Tool Calling 和更完整的 Agent Runtime 演进

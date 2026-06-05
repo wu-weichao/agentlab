@@ -61,7 +61,16 @@ func newChatCommand(configPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			log.Printf("[cli] 配置加载成功 provider=%s model=%s base_url=%s max_history=%d", cfg.LLM.Provider, cfg.LLM.Model, cfg.LLM.BaseURL, cfg.Chat.MaxHistoryMessages)
+			log.Printf(
+				"[cli] 配置加载成功 provider=%s model=%s base_url=%s context_max_chars=%d keep_recent_turns=%d summary_max_chars=%d rolling_summary=%t",
+				cfg.LLM.Provider,
+				cfg.LLM.Model,
+				cfg.LLM.BaseURL,
+				cfg.Chat.Context.MaxChars,
+				cfg.Chat.Context.KeepRecentTurns,
+				cfg.Chat.Context.SummaryMaxChars,
+				cfg.Chat.Context.EnableRollingSummary,
+			)
 			log.Printf("[cli] 开始渲染 prompt template variables=%d", len(cfg.Chat.Prompt.VariableMap()))
 
 			renderedPrompt, err := prompt.Render(cfg.Chat.Prompt.Template, cfg.Chat.Prompt.VariableMap())
@@ -77,7 +86,7 @@ func newChatCommand(configPath *string) *cobra.Command {
 			}
 
 			sess := session.New(renderedPrompt)
-			bot := app.NewChatBot(client, sess)
+			bot := app.NewChatBot(client, sess, cfg.Chat.Context)
 
 			fmt.Println("AI Agent Lab ChatBot")
 			fmt.Println("Type 'exit' or 'quit' to leave.")
@@ -108,8 +117,9 @@ func newChatCommand(configPath *string) *cobra.Command {
 					fmt.Println("Bot: session cleared")
 					continue
 				case "history":
-					log.Printf("[cli] 输出历史消息 count=%d", len(sess.Messages()))
-					printHistory(sess.Messages())
+					history := sess.History()
+					log.Printf("[cli] 输出历史消息 count=%d", len(history))
+					printHistory(history)
 					continue
 				}
 

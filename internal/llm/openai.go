@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"agentlab/internal/requestctx"
 )
 
 // OpenAIConfig 描述 OpenAI 兼容客户端的初始化参数。
@@ -42,7 +44,7 @@ func NewOpenAIClient(cfg OpenAIConfig) *OpenAIClient {
 		model:       cfg.Model,
 		temperature: cfg.Temperature,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: 180 * time.Second,
 		},
 	}
 }
@@ -79,23 +81,23 @@ func (c *OpenAIClient) Chat(ctx context.Context, messages []Message) (*ChatRespo
 	}
 
 	start := time.Now()
-	log.Printf("[llm/openai] 发送请求 provider=openai model=%s url=%s messages=%d last_message=%q", c.model, requestURL, len(messages), summarizeLastMessage(messages))
+	log.Printf("[llm/openai] request_id=%s 发送请求 provider=openai model=%s url=%s messages=%d last_message=%q", requestctx.FromContext(ctx), c.model, requestURL, len(messages), summarizeLastMessage(messages))
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		log.Printf("[llm/openai] 请求发送失败 model=%s err=%v", c.model, err)
+		log.Printf("[llm/openai] request_id=%s 请求发送失败 model=%s err=%v", requestctx.FromContext(ctx), c.model, err)
 		return nil, fmt.Errorf("send openai request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("[llm/openai] 读取响应失败 status=%s err=%v", resp.Status, err)
+		log.Printf("[llm/openai] request_id=%s 读取响应失败 status=%s err=%v", requestctx.FromContext(ctx), resp.Status, err)
 		return nil, fmt.Errorf("read openai response: %w", err)
 	}
 
-	log.Printf("[llm/openai] 收到响应 status=%s duration=%s body_bytes=%d", resp.Status, time.Since(start), len(body))
+	log.Printf("[llm/openai] request_id=%s 收到响应 status=%s duration=%s body_bytes=%d", requestctx.FromContext(ctx), resp.Status, time.Since(start), len(body))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		log.Printf("[llm/openai] 请求失败详情 body=%s", summarizeText(strings.TrimSpace(string(body)), 300))
+		log.Printf("[llm/openai] request_id=%s 请求失败详情 body=%s", requestctx.FromContext(ctx), summarizeText(strings.TrimSpace(string(body)), 300))
 		return nil, fmt.Errorf("openai request failed: status=%s body=%s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
@@ -103,7 +105,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, messages []Message) (*ChatRespo
 	if err := json.Unmarshal(body, &completion); err != nil {
 		return nil, fmt.Errorf("decode openai response: %w", err)
 	}
-	log.Printf("[llm/openai] 响应内容 body=%s", strings.TrimSpace(string(body)))
+	log.Printf("[llm/openai] request_id=%s 响应内容 body=%s", requestctx.FromContext(ctx), strings.TrimSpace(string(body)))
 
 	if len(completion.Choices) == 0 {
 		return nil, fmt.Errorf("openai response missing choices")
@@ -114,7 +116,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, messages []Message) (*ChatRespo
 		return nil, fmt.Errorf("openai response missing assistant content")
 	}
 
-	log.Printf("[llm/openai] 解析成功 choice_count=%d reply=%q", len(completion.Choices), summarizeText(content, 120))
+	log.Printf("[llm/openai] request_id=%s 解析成功 choice_count=%d reply=%q", requestctx.FromContext(ctx), len(completion.Choices), summarizeText(content, 120))
 	return &ChatResponse{Content: content}, nil
 }
 

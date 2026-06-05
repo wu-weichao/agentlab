@@ -6,11 +6,12 @@
 
 当前已落地基础 CLI ChatBot，能力边界如下：
 - 使用 `spf13/cobra` 提供命令行入口
-- 支持 `system`、`user`、`assistant` 三类消息
+- 支持 `system`、`user`、`assistant` 和内部 `summary` 语义消息
 - 支持基于 OpenAI 兼容接口的 LLM 调用
 - 仅从本地 `configs/config.yaml` 加载配置
 - 支持通过 `chat.prompt.template`、`chat.prompt.role`、`chat.prompt.context` 生成 system prompt
 - 启动阶段校验 Prompt 模板变量完整性
+- 支持 `chat.context.*` 驱动的上下文预算控制、完整轮次裁剪和单份滚动摘要
 - 支持 `exit`、`quit`、`clear`、`history` 交互命令
 
 当前版本暂不包含 Tool Calling、RAG、长期记忆、Workflow、Multi-Agent 和 Web UI。
@@ -37,7 +38,11 @@ go run ./cmd/chat run --config configs/config.yaml
 
 ```yaml
 chat:
-  max_history_messages: 20
+  context:
+    max_chars: 12000
+    keep_recent_turns: 6
+    summary_max_chars: 2400
+    enable_rolling_summary: true
   prompt:
     template: |
       你是一个{{role.name}}。
@@ -51,5 +56,7 @@ chat:
     context:
       language: 中文
 ```
+
+`chat.max_history_messages` 已移除，配置中如果仍包含该字段会在启动阶段直接报错。
 
 运行日志默认写入 `logs/chat.log`，不会直接输出到命令行交互界面。

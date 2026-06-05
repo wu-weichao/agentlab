@@ -9,7 +9,7 @@ import (
 func TestNewAddsSystemPrompt(t *testing.T) {
 	sess := New("system prompt")
 
-	messages := sess.Messages()
+	messages := sess.History()
 	if len(messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messages))
 	}
@@ -22,7 +22,7 @@ func TestNewUsesRenderedPromptAsInitialMessage(t *testing.T) {
 	renderedPrompt := "你是一个 AI Agent 学习助理。"
 	sess := New(renderedPrompt)
 
-	messages := sess.Messages()
+	messages := sess.History()
 	if messages[0].Content != renderedPrompt {
 		t.Fatalf("expected rendered prompt %q, got %q", renderedPrompt, messages[0].Content)
 	}
@@ -35,7 +35,7 @@ func TestResetKeepsSystemPrompt(t *testing.T) {
 
 	sess.Reset()
 
-	messages := sess.Messages()
+	messages := sess.History()
 	if len(messages) != 1 {
 		t.Fatalf("expected 1 message after reset, got %d", len(messages))
 	}
@@ -52,7 +52,7 @@ func TestResetRestoresRenderedPromptAfterConversation(t *testing.T) {
 
 	sess.Reset()
 
-	messages := sess.Messages()
+	messages := sess.History()
 	if len(messages) != 1 {
 		t.Fatalf("expected 1 message after reset, got %d", len(messages))
 	}
@@ -61,5 +61,22 @@ func TestResetRestoresRenderedPromptAfterConversation(t *testing.T) {
 	}
 	if messages[0].Content != renderedPrompt {
 		t.Fatalf("expected rendered prompt to remain, got %q", messages[0].Content)
+	}
+}
+
+func TestHistoryIncludesRollingSummaryBeforeRecentMessages(t *testing.T) {
+	sess := New("system prompt")
+	sess.SetRollingSummary("[关键事实]\n- 用户想学习 Agent")
+	sess.AddUserMessage("你好")
+
+	history := sess.History()
+	if len(history) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(history))
+	}
+	if history[1].Role != llm.RoleSummary {
+		t.Fatalf("expected second role summary, got %s", history[1].Role)
+	}
+	if history[2].Role != llm.RoleUser {
+		t.Fatalf("expected third role user, got %s", history[2].Role)
 	}
 }

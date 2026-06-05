@@ -6,7 +6,11 @@ llm:
   temperature: 0.7
 
 chat:
-  max_history_messages: 20
+  context:
+    max_chars: 12000
+    keep_recent_turns: 5
+    summary_max_chars: 2400
+    enable_rolling_summary: true
   prompt:
     template: |
       你是一个{{role.name}}。

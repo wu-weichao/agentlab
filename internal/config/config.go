@@ -28,8 +28,8 @@ type LLMConfig struct {
 
 // ChatConfig 描述本地对话行为相关的配置项。
 type ChatConfig struct {
-	MaxHistoryMessages int          `yaml:"max_history_messages"`
-	Prompt             PromptConfig `yaml:"prompt"`
+	Prompt  PromptConfig  `yaml:"prompt"`
+	Context ContextConfig `yaml:"context"`
 }
 
 // PromptConfig 定义 system prompt 的模板和结构化变量。
@@ -51,11 +51,23 @@ type PromptContextConfig struct {
 	Language string `yaml:"language"`
 }
 
+// ContextConfig 定义单会话上下文控制参数。
+type ContextConfig struct {
+	MaxChars             int  `yaml:"max_chars"`
+	KeepRecentTurns      int  `yaml:"keep_recent_turns"`
+	SummaryMaxChars      int  `yaml:"summary_max_chars"`
+	EnableRollingSummary bool `yaml:"enable_rolling_summary"`
+}
+
 // Load 从本地 YAML 文件读取并校验聊天配置。
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config file: %w", err)
+	}
+
+	if hasDeprecatedMaxHistoryMessages(data) {
+		return nil, errors.New("chat.max_history_messages has been removed; use chat.context.* instead")
 	}
 
 	var cfg Config
@@ -85,11 +97,21 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.LLM.BaseURL) == "" {
 		return errors.New("llm.base_url is required")
 	}
-	if c.Chat.MaxHistoryMessages <= 0 {
-		return errors.New("chat.max_history_messages must be greater than 0")
-	}
 	if strings.TrimSpace(c.Chat.Prompt.Template) == "" {
 		return errors.New("chat.prompt.template is required")
+	}
+	// v0.0.3 的上下文窗口完全由 chat.context.* 驱动，启动阶段直接拦截非法预算配置。
+	if c.Chat.Context.MaxChars <= 0 {
+		return errors.New("chat.context.max_chars must be greater than 0")
+	}
+	if c.Chat.Context.KeepRecentTurns <= 0 {
+		return errors.New("chat.context.keep_recent_turns must be greater than 0")
+	}
+	if c.Chat.Context.SummaryMaxChars <= 0 {
+		return errors.New("chat.context.summary_max_chars must be greater than 0")
+	}
+	if c.Chat.Context.SummaryMaxChars >= c.Chat.Context.MaxChars {
+		return errors.New("chat.context.summary_max_chars must be less than chat.context.max_chars")
 	}
 
 	requiredVariables := map[string]string{
@@ -130,7 +152,7 @@ func (c PromptConfig) VariableMap() map[string]string {
 	}
 }
 
-// isPlaceholderValue 用于识别示例配置中的占位值，避免误当成真实密钥使用。
+// isPlaceholderValue 用于识别示例配置中的占位值，避免用户带着示例 API Key 进入运行时。
 func isPlaceholderValue(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -138,4 +160,39 @@ func isPlaceholderValue(value string) bool {
 	}
 
 	return strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")
+}
+
+// hasDeprecatedMaxHistoryMessages 在反序列化前扫描 YAML AST，
+// 显式拦截已经移除的旧字段，避免它被结构体静默忽略。
+func hasDeprecatedMaxHistoryMessages(data []byte) bool {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	if len(root.Content) == 0 {
+		return false
+	}
+
+	return mappingHasNestedKey(root.Content[0], "chat", "max_history_messages")
+}
+
+// mappingHasNestedKey 递归检查多层 mapping 中是否存在目标键路径。
+func mappingHasNestedKey(node *yaml.Node, keys ...string) bool {
+	if node == nil || len(keys) == 0 || node.Kind != yaml.MappingNode {
+		return false
+	}
+
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		keyNode := node.Content[i]
+		valueNode := node.Content[i+1]
+		if keyNode.Value != keys[0] {
+			continue
+		}
+		if len(keys) == 1 {
+			return true
+		}
+		return mappingHasNestedKey(valueNode, keys[1:]...)
+	}
+
+	return false
 }

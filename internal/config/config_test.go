@@ -32,6 +32,9 @@ func TestLoadReadsPromptTemplateConfig(t *testing.T) {
 	if cfg.Chat.Prompt.Context.Language != "中文" {
 		t.Fatalf("unexpected language: %q", cfg.Chat.Prompt.Context.Language)
 	}
+	if cfg.Chat.Context.MaxChars != 12000 {
+		t.Fatalf("unexpected max chars: %d", cfg.Chat.Context.MaxChars)
+	}
 }
 
 func TestValidateRejectsMissingAPIKey(t *testing.T) {
@@ -79,6 +82,30 @@ func TestValidateRejectsMissingTemplateVariable(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidContextConfig(t *testing.T) {
+	cfg := validConfig()
+	cfg.Chat.Context.SummaryMaxChars = cfg.Chat.Context.MaxChars
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid context config")
+	}
+}
+
+func TestLoadRejectsDeprecatedMaxHistoryMessages(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfigFile(t, dir, validConfigYAMLWithMaxHistory(
+		"你是{{role.name}}，职责是{{role.goal}}。",
+		"AI Agent 学习助理",
+		"帮助用户理解 Agent",
+		"简洁",
+		"中文",
+	))
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected deprecated field error")
+	}
+}
+
 func validConfig() *Config {
 	return &Config{
 		LLM: LLMConfig{
@@ -89,7 +116,6 @@ func validConfig() *Config {
 			Temperature: 0.5,
 		},
 		Chat: ChatConfig{
-			MaxHistoryMessages: 10,
 			Prompt: PromptConfig{
 				Template: "你是{{role.name}}，请使用{{context.language}}回答。",
 				Role: PromptRoleConfig{
@@ -100,6 +126,12 @@ func validConfig() *Config {
 				Context: PromptContextConfig{
 					Language: "中文",
 				},
+			},
+			Context: ContextConfig{
+				MaxChars:             12000,
+				KeepRecentTurns:      6,
+				SummaryMaxChars:      2400,
+				EnableRollingSummary: true,
 			},
 		},
 	}
@@ -114,7 +146,37 @@ func validConfigYAML(template string, roleName string, roleGoal string, roleStyl
 		"  api_key: real-key\n" +
 		"  temperature: 0.5\n" +
 		"chat:\n" +
+		"  context:\n" +
+		"    max_chars: 12000\n" +
+		"    keep_recent_turns: 6\n" +
+		"    summary_max_chars: 2400\n" +
+		"    enable_rolling_summary: true\n" +
+		"  prompt:\n" +
+		"    template: |\n" +
+		"      " + template + "\n" +
+		"    role:\n" +
+		"      name: " + roleName + "\n" +
+		"      goal: " + roleGoal + "\n" +
+		"      style: " + roleStyle + "\n" +
+		"    context:\n" +
+		"      language: " + language + "\n"
+}
+
+func validConfigYAMLWithMaxHistory(template string, roleName string, roleGoal string, roleStyle string, language string) string {
+	return "" +
+		"llm:\n" +
+		"  provider: openai\n" +
+		"  model: gpt-4o-mini\n" +
+		"  base_url: https://api.openai.com/v1\n" +
+		"  api_key: real-key\n" +
+		"  temperature: 0.5\n" +
+		"chat:\n" +
 		"  max_history_messages: 10\n" +
+		"  context:\n" +
+		"    max_chars: 12000\n" +
+		"    keep_recent_turns: 6\n" +
+		"    summary_max_chars: 2400\n" +
+		"    enable_rolling_summary: true\n" +
 		"  prompt:\n" +
 		"    template: |\n" +
 		"      " + template + "\n" +

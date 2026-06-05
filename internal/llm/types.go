@@ -7,6 +7,7 @@ const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
+	RoleSummary   Role = "summary"
 )
 
 // Message 是聊天上下文中的基础消息结构。
