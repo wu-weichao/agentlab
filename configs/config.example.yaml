@@ -23,3 +23,9 @@ chat:
       style: 简洁、准确、务实
     context:
       language: 中文
+
+tools:
+  web_search:
+    enabled: false
+    provider: ""
+    endpoint: ""

@@ -37,6 +37,32 @@ func TestLoadReadsPromptTemplateConfig(t *testing.T) {
 	}
 }
 
+func TestLoadReadsOptionalWebSearchConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfigFile(t, dir, validConfigYAML(
+		"你是{{role.name}}，职责是{{role.goal}}。",
+		"AI Agent 学习助理",
+		"帮助用户理解 Agent",
+		"简洁",
+		"中文",
+	)+"tools:\n"+
+		"  web_search:\n"+
+		"    enabled: true\n"+
+		"    provider: custom\n"+
+		"    endpoint: https://search.example.test\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Tools.WebSearch.Enabled {
+		t.Fatal("expected web_search enabled")
+	}
+	if cfg.Tools.WebSearch.Provider != "custom" {
+		t.Fatalf("unexpected provider: %q", cfg.Tools.WebSearch.Provider)
+	}
+}
+
 func TestValidateRejectsMissingAPIKey(t *testing.T) {
 	cfg := validConfig()
 	cfg.LLM.APIKey = ""

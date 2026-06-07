@@ -13,8 +13,9 @@ import (
 
 // Config 是聊天运行时的总配置结构。
 type Config struct {
-	LLM  LLMConfig  `yaml:"llm"`
-	Chat ChatConfig `yaml:"chat"`
+	LLM   LLMConfig   `yaml:"llm"`
+	Chat  ChatConfig  `yaml:"chat"`
+	Tools ToolsConfig `yaml:"tools"`
 }
 
 // LLMConfig 描述模型提供方和请求参数。
@@ -57,6 +58,18 @@ type ContextConfig struct {
 	KeepRecentTurns      int  `yaml:"keep_recent_turns"`
 	SummaryMaxChars      int  `yaml:"summary_max_chars"`
 	EnableRollingSummary bool `yaml:"enable_rolling_summary"`
+}
+
+// ToolsConfig 描述可选工具配置。首版 web_search 未配置时仍允许启动。
+type ToolsConfig struct {
+	WebSearch WebSearchConfig `yaml:"web_search"`
+}
+
+// WebSearchConfig 为后续真实搜索客户端预留最小配置入口。
+type WebSearchConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Provider string `yaml:"provider"`
+	Endpoint string `yaml:"endpoint"`
 }
 
 // Load 从本地 YAML 文件读取并校验聊天配置。

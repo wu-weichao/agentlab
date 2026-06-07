@@ -60,6 +60,19 @@ func (s *Session) SystemPrompt() string {
 	return s.systemPrompt
 }
 
+// AppendSystemPromptSection 在启动阶段向 system prompt 追加全局能力说明。
+// 该方法用于把工具能力等 Agent 级说明固化到会话系统提示中，而不是每轮临时注入。
+func (s *Session) AppendSystemPromptSection(section string) {
+	if section == "" {
+		return
+	}
+	if s.systemPrompt == "" {
+		s.systemPrompt = section
+		return
+	}
+	s.systemPrompt = s.systemPrompt + "\n\n" + section
+}
+
 // History 返回按 system -> summary -> recent 顺序组织的会话历史。
 func (s *Session) History() []llm.Message {
 	messages := []llm.Message{{

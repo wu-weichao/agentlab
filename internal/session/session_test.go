@@ -44,6 +44,22 @@ func TestResetKeepsSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestAppendSystemPromptSectionSurvivesReset(t *testing.T) {
+	sess := New("system prompt")
+	sess.AppendSystemPromptSection("[工具能力]\n- time")
+	sess.AddUserMessage("hi")
+
+	sess.Reset()
+
+	messages := sess.History()
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message after reset, got %d", len(messages))
+	}
+	if messages[0].Content != "system prompt\n\n[工具能力]\n- time" {
+		t.Fatalf("unexpected system prompt: %q", messages[0].Content)
+	}
+}
+
 func TestResetRestoresRenderedPromptAfterConversation(t *testing.T) {
 	renderedPrompt := "你是一个 AI Agent 学习助理。"
 	sess := New(renderedPrompt)
