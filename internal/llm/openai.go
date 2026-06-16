@@ -81,7 +81,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, messages []Message) (*ChatRespo
 	}
 
 	start := time.Now()
-	log.Printf("[llm/openai] request_id=%s 发送请求 provider=openai model=%s url=%s messages=%d last_message=%q", requestctx.FromContext(ctx), c.model, requestURL, len(messages), summarizeLastMessage(messages))
+	log.Printf("[llm/openai] request_id=%s 发送请求 provider=openai model=%s url=%s messages=%d request_body=%s", requestctx.FromContext(ctx), c.model, requestURL, len(messages), string(payload))
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		log.Printf("[llm/openai] request_id=%s 请求发送失败 model=%s err=%v", requestctx.FromContext(ctx), c.model, err)
@@ -135,15 +135,6 @@ type openAIChatResponse struct {
 	Choices []struct {
 		Message openAIMessage `json:"message"`
 	} `json:"choices"`
-}
-
-func summarizeLastMessage(messages []Message) string {
-	if len(messages) == 0 {
-		return ""
-	}
-
-	last := messages[len(messages)-1]
-	return summarizeText(string(last.Role)+": "+last.Content, 120)
 }
 
 func summarizeText(text string, limit int) string {

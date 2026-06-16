@@ -218,14 +218,17 @@ func TestChatBotSendCompletesCalculatorToolCall(t *testing.T) {
 		t.Fatalf("expected 2 llm calls, got %d", len(client.calls))
 	}
 	finalRequest := client.calls[1]
-	if finalRequest[len(finalRequest)-1].Role != llm.RoleSystem {
-		t.Fatalf("expected final tool result message to be system, got %s", finalRequest[len(finalRequest)-1].Role)
+	if finalRequest[len(finalRequest)-1].Role != llm.RoleUser {
+		t.Fatalf("expected final tool result message to be user, got %s", finalRequest[len(finalRequest)-1].Role)
 	}
 	if !strings.Contains(finalRequest[0].Content, "可用工具") {
 		t.Fatal("tool instructions should live in the global system prompt")
 	}
 	if !strings.Contains(finalRequest[len(finalRequest)-1].Content, "FINAL_ANSWER") {
 		t.Fatalf("expected final request to disable recursive tools, got %q", finalRequest[len(finalRequest)-1].Content)
+	}
+	if !strings.Contains(finalRequest[len(finalRequest)-1].Content, "工具执行结果如下") {
+		t.Fatalf("expected final request to include tool result, got %q", finalRequest[len(finalRequest)-1].Content)
 	}
 	if len(sess.History()) != 3 {
 		t.Fatalf("expected user and final assistant history only, got %d", len(sess.History()))
@@ -364,6 +367,43 @@ func TestChatBotSendDoesNotAppendAssistantWhenSecondModelCallFails(t *testing.T)
 	}
 }
 
+func TestExecuteToolWithRunCacheReusesSameToolCallKey(t *testing.T) {
+	executor := tools.NewExecutor()
+	tool := &countingTool{}
+	if err := executor.Register(tool); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	runCache := map[tools.ToolCallKey]tools.ToolResult{}
+	first, err := executeToolWithRunCache(context.Background(), executor, tools.ToolCall{
+		ToolName: "counting",
+		Arguments: map[string]any{
+			"a": float64(1),
+			"b": "same",
+		},
+	}, runCache)
+	if err != nil {
+		t.Fatalf("executeToolWithRunCache returned error: %v", err)
+	}
+	second, err := executeToolWithRunCache(context.Background(), executor, tools.ToolCall{
+		ToolName: "counting",
+		Arguments: map[string]any{
+			"b": "same",
+			"a": int64(1),
+		},
+	}, runCache)
+	if err != nil {
+		t.Fatalf("executeToolWithRunCache returned error: %v", err)
+	}
+
+	if tool.calls != 1 {
+		t.Fatalf("expected tool to execute once, got %d", tool.calls)
+	}
+	if first.Content != second.Content {
+		t.Fatalf("expected cached result, got %q and %q", first.Content, second.Content)
+	}
+}
+
 type scriptedChatResponse struct {
 	content string
 	err     error
@@ -377,6 +417,33 @@ type scriptedChatClient struct {
 type scriptedSearchClient struct {
 	results []tools.SearchResult
 	err     error
+}
+
+type countingTool struct {
+	calls int
+}
+
+func (t *countingTool) Name() string {
+	return "counting"
+}
+
+func (t *countingTool) Description() string {
+	return "counts executions"
+}
+
+func (t *countingTool) Parameters() []tools.Parameter {
+	return nil
+}
+
+func (t *countingTool) Execute(_ context.Context, _ map[string]any) tools.ToolResult {
+	t.calls++
+	return tools.ToolResult{
+		Success: true,
+		Content: "execution result",
+		Metadata: map[string]any{
+			"calls": t.calls,
+		},
+	}
 }
 
 func (c scriptedSearchClient) Search(_ context.Context, _ string, _ int) ([]tools.SearchResult, error) {

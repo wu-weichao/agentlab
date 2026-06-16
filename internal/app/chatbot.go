@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -155,30 +156,31 @@ func renderToolInstructions(specs []tools.ToolSpec) string {
 // 工具结果只追加到本轮二次请求中，
 // 不直接写入 Session，避免内部协议污染用户可见历史。
 func (b *ChatBot) completeToolCall(ctx context.Context, requestMessages []llm.Message, call tools.ToolCall) (*llm.ChatResponse, error) {
-	if b.executor == nil {
-		return nil, errors.New("tool executor is not configured")
+	runCache := map[tools.ToolCallKey]tools.ToolResult{}
+	result, err := executeToolWithRunCache(ctx, b.executor, call, runCache)
+	if err != nil {
+		return nil, err
 	}
-
-	result := b.executor.Execute(ctx, call)
+	resultJSON := formatToolResultLogJSON(result)
 	log.Printf(
-		"[chatbot] request_id=%s 工具执行完成 tool=%s success=%t error=%q",
+		"[chatbot] request_id=%s 工具执行完成 tool=%s success=%t error=%q tool_result_json=%s",
 		requestctx.FromContext(ctx),
 		call.ToolName,
 		result.Success,
 		result.Error,
+		resultJSON,
 	)
 
 	messages := append([]llm.Message(nil), requestMessages...)
-	// 用 assistant 消息保留“模型请求工具”的语义，再用 system 消息注入工具结果。
-	// 这样 provider 仍只接收基础 chat roles，同时模型能区分原始对话和工具反馈。
+	// 用 assistant 消息保留“模型请求工具”的语义，再用 user 消息把工具结果作为下一步输入回填。
+	// 一些 OpenAI 兼容模型会弱化后置 system 消息，使用 user 消息能更明确地推进到最终回答阶段。
 	messages = append(messages, llm.Message{
 		Role:    llm.RoleAssistant,
 		Content: "请求调用工具: " + call.ToolName + "\n原因: " + call.Reason,
 	})
 	messages = append(messages, llm.Message{
-		Role: llm.RoleSystem,
-		Content: "以下是工具执行结果。你现在处于 FINAL_ANSWER 阶段：必须基于该结果直接生成最终回答，禁止再次请求工具调用，禁止输出 tool_call JSON。\n" +
-			tools.FormatToolResult(result),
+		Role:    llm.RoleUser,
+		Content: buildToolResultMessage(result),
 	})
 
 	resp, err := b.client.Chat(ctx, messages)
@@ -201,6 +203,20 @@ func (b *ChatBot) completeToolCall(ctx context.Context, requestMessages []llm.Me
 	}
 
 	return resp, nil
+}
+
+func formatToolResultLogJSON(result tools.ToolResult) string {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Sprintf(`{"success":false,"error":"marshal tool result log: %s"}`, err)
+	}
+	return string(data)
+}
+
+func buildToolResultMessage(result tools.ToolResult) string {
+	return "工具执行结果如下。工具调用阶段已经结束。\n" +
+		"你现在处于 FINAL_ANSWER 阶段：只能基于该结果直接回答用户原问题；禁止再次请求工具调用；禁止输出 tool_call JSON；禁止输出 Markdown 代码块。\n" +
+		tools.FormatToolResult(result)
 }
 
 func fallbackAnswerFromToolResult(call tools.ToolCall, result tools.ToolResult) string {

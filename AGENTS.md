@@ -25,7 +25,8 @@
 ## 编码风格与命名规范
 Go 代码遵循默认风格：使用 `gofmt`，缩进使用 tab，包名简短明确，导出标识符使用 PascalCase，非导出标识符使用 camelCase。文件名按职责命名，例如 `planner.go`、`tool_executor.go`、`memory_store.go`。
 
-规范文档使用简洁中文描述，标题明确，避免空泛表述。OpenSpec 变更目录使用 kebab-case，例如 `openspec/changes/add-basic-reasoning-loop`。
+- 规范文档使用简洁中文描述，标题明确，避免空泛表述。OpenSpec 变更目录使用 kebab-case，例如 `openspec/changes/add-basic-reasoning-loop`。
+- 学习项目，核心模块需要确保代码注释，核心执行节点需要保证日志记录
 
 ## 测试规范
 优先使用 Go 原生测试框架，测试文件命名为 `*_test.go`，测试函数命名为 `TestXxx`。推荐采用表驱动测试，重点覆盖以下内容：
@@ -53,3 +54,4 @@ PR 说明建议包含：
 - 新增能力前，先在 `openspec/changes/` 中补充提案、设计或任务，再进入实现。
 - 避免过早抽象；只有当同类逻辑重复出现时再提炼公共模块。
 - 若实现依赖外部模型、工具或环境变量，应在相关文档中写明接入方式与最小配置要求。
+- `docs/evolution.md` 版本描述要包含能力、实现思路、可观测性、边界、下一步。

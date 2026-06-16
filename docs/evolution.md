@@ -167,3 +167,81 @@
 - 评估是否接入 provider 原生 tool calling，减少文本协议下模型重复请求工具的问题
 - 选择并接入真实 `web_search` 供应商实现
 - 在单工具闭环稳定后，再设计多工具规划、授权确认和高风险写入/命令类工具
+
+## v0.0.5 tool-call-key-and-run-cache
+
+目标：在单次工具闭环基础上，补齐 Runtime 级工具调用标识和同轮 runCache 基础设施，并增强工具闭环诊断能力，为后续多步 Tool Loop 做准备。
+
+新增：
+- `internal/tools/key.go`，定义 `ToolCallKey{Name, ArgsHash}`，用工具名和参数 hash 标识一次工具调用
+- `BuildToolCallKey(call ToolCall)`，统一从 `ToolCall` 构造稳定 key，并校验空工具名
+- `NormalizeArguments(args map[string]any)`，把工具参数转换为稳定 JSON 字符串
+- 参数 hash 使用 SHA-256，避免把完整参数直接塞进 key，同时保持可比较性
+- `internal/app/tool_cache.go`，提供 `executeToolWithRunCache` 作为工具执行包装入口
+- 当前单工具闭环已统一经过 runCache 执行包装，后续多步 Tool Loop 可复用同一入口
+- 工具结果回填阶段使用 `user` 消息承载工具执行结果和 `FINAL_ANSWER` 约束，减少兼容模型在第二次响应中继续输出 `tool_call` 的概率
+- 工具执行完成日志输出完整单行 `ToolResult` JSON；OpenAI 兼容客户端发送请求日志输出完整 request body，便于排查工具结果是否正确进入二次请求
+- key 构建、参数标准化、执行包装层缓存复用和现有单工具闭环兼容性测试
+
+关键决策：
+- 本版本只做基础设施，不改变当前“单轮最多一次工具调用”的用户可见行为
+- runCache 生命周期限定在一次请求内，不引入跨轮缓存、TTL 或 `ToolMetadata`
+- 参数标准化只做 JSON 结构级归一化，不做字符串大小写、路径或搜索词等业务语义归一化
+- 数字参数会做稳定化处理：整数形态的浮点数会归一为整数，`NaN` 和无穷大被拒绝
+- map 和嵌套对象依赖 JSON marshal 的稳定 key 排序，数组保持原顺序，因为数组顺序通常有业务含义
+- `Tool` 接口保持不变，现有工具不需要声明缓存策略
+- 二次工具结果回填不写入 `Session`，只作为本轮第二次模型请求的临时上下文
+- 完整请求与工具结果日志服务于本地调试；后续生产化需要再加入日志级别、脱敏和截断策略
+
+ToolCallKey 思路：
+- `ToolCallKey.Name` 直接来自规范化后的 `tool_name`
+- `ToolCallKey.ArgsHash` 来自标准化参数 JSON 的 SHA-256
+- 参数字段顺序不同但内容相同，应生成相同 key
+- 工具名不同即使参数相同，也必须生成不同 key
+- 空参数和 `nil` 参数都按空 JSON 对象处理
+- 不支持的参数类型会返回参数错误，而不是隐式转字符串
+
+runCache 执行思路：
+- 每次工具执行前先构造 `ToolCallKey`
+- 如果当前 run cache 已包含该 key，则直接复用已缓存的 `ToolResult`
+- 如果未命中，则调用 `tools.Executor.Execute()` 执行真实工具，并把结果写入当前 run cache
+- 当前 `ChatBot.Send()` 仍只允许单轮一次工具调用，所以 runCache 的端到端收益有限
+- 该执行入口是给后续多步 Tool Loop 预留的基础设施，避免到多步阶段再重写工具执行路径
+
+工具结果回填调整：
+- 二次请求中先追加一条 `assistant` 消息，保留“模型请求调用某个工具”的语义
+- 随后追加一条 `user` 消息，内容包含“工具执行结果如下”“工具调用阶段已经结束”和 `FINAL_ANSWER` 阶段约束
+- 该 `user` 消息包含结构化 `ToolResult`，要求模型只能基于结果回答原问题
+- 明确禁止再次请求工具调用、禁止输出 `tool_call` JSON、禁止输出 Markdown 代码块
+- 如果第二次模型响应仍然输出工具调用，系统继续使用已有 fallback 基于 `ToolResult` 生成最终回答，不执行第二个工具
+
+可观测性增强：
+- `工具执行完成` 日志现在包含 `tool_result_json=<json>`，输出完整单行 `ToolResult` JSON 字符串
+- `tool_result_json` 使用 `json.Marshal(ToolResult)` 生成，避免多行缩进 JSON 打散日志
+- OpenAI 兼容客户端的 `发送请求` 日志输出完整 `request_body=<json>`
+- `request_body` 是实际发送到 `/chat/completions` 的 JSON body，包含 model、messages 和 temperature
+- 请求日志不输出 Authorization header
+- 这些日志可以直接用于确认第二次请求是否包含工具结果、`FINAL_ANSWER` 约束以及完整上下文
+
+测试覆盖：
+- 参数字段顺序不同但语义相同，生成相同 `ToolCallKey`
+- 工具名不同但参数相同，生成不同 `ToolCallKey`
+- 空参数、嵌套参数和数字参数标准化
+- runCache 命中时不重复执行工具
+- calculator、time、file_read、web_search 的单工具闭环测试继续通过
+- 第二次模型响应仍返回 `tool_call` 时，系统继续使用 fallback 回答
+
+当前边界：
+- 不支持多步 Tool Loop
+- 不支持跨轮工具结果缓存
+- 不支持 provider 原生 tool calling
+- 不把工具轨迹写入 `history`
+- 不在缓存结果中追加 `cache_hit`、执行耗时或命中来源等 metadata
+- 不按工具类型区分可缓存性；当前缓存只在一次请求内有效，因此暂不需要 TTL 和副作用策略
+- 完整日志可能包含用户输入、文件内容或搜索结果，只适合当前本地学习项目的调试场景
+
+下一步：
+- 引入 `MaxSteps` 和多步 Tool Loop，让 runCache 在完整 `ChatBot.Send()` 流程中发挥端到端去重作用
+- 在多步 Tool Loop 中为缓存命中补充可观测 metadata，例如 `cache_hit=true`
+- 评估日志级别、脱敏和截断策略，避免完整 request body 在生产化场景中过度暴露上下文
+- 继续评估 provider 原生 tool calling，减少文本协议下模型重复请求工具的问题
