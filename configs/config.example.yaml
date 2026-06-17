@@ -25,6 +25,7 @@ chat:
       language: 中文
 
 tools:
+  max_steps: 3
   web_search:
     enabled: false
     provider: ""

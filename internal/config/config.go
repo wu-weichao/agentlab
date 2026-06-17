@@ -11,6 +11,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	DefaultToolMaxSteps = 3
+	MaxToolMaxSteps     = 10
+)
+
 // Config 是聊天运行时的总配置结构。
 type Config struct {
 	LLM   LLMConfig   `yaml:"llm"`
@@ -62,6 +67,7 @@ type ContextConfig struct {
 
 // ToolsConfig 描述可选工具配置。首版 web_search 未配置时仍允许启动。
 type ToolsConfig struct {
+	MaxSteps  int             `yaml:"max_steps"`
 	WebSearch WebSearchConfig `yaml:"web_search"`
 }
 
@@ -86,6 +92,9 @@ func Load(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config file: %w", err)
+	}
+	if !hasToolsMaxSteps(data) {
+		cfg.Tools.MaxSteps = DefaultToolMaxSteps
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -125,6 +134,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Chat.Context.SummaryMaxChars >= c.Chat.Context.MaxChars {
 		return errors.New("chat.context.summary_max_chars must be less than chat.context.max_chars")
+	}
+	if c.Tools.MaxSteps <= 0 {
+		return errors.New("tools.max_steps must be between 1 and 10")
+	}
+	if c.Tools.MaxSteps > MaxToolMaxSteps {
+		return errors.New("tools.max_steps must be between 1 and 10")
 	}
 
 	requiredVariables := map[string]string{
@@ -187,6 +202,18 @@ func hasDeprecatedMaxHistoryMessages(data []byte) bool {
 	}
 
 	return mappingHasNestedKey(root.Content[0], "chat", "max_history_messages")
+}
+
+func hasToolsMaxSteps(data []byte) bool {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	if len(root.Content) == 0 {
+		return false
+	}
+
+	return mappingHasNestedKey(root.Content[0], "tools", "max_steps")
 }
 
 // mappingHasNestedKey 递归检查多层 mapping 中是否存在目标键路径。

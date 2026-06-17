@@ -292,3 +292,43 @@ runCache 执行思路：
 - 继续评估日志脱敏与截断策略，避免完整 request body 在生产化场景中过度暴露上下文
 - 评估具体 provider 是否支持保留 reasoning 的同时稳定返回 assistant `content` 的请求参数
 - 在多步工具循环稳定后，再设计授权确认和高风险写入/命令类工具
+
+## v0.0.7 tool-loop-config-observability
+
+目标：让 v0.0.6 的多步 Tool Loop 可配置、可解释、可调试，同时不改变工具调用协议、runCache 生命周期或工具执行语义。
+
+新增：
+- `tools.max_steps` 配置，缺失时默认 `3`
+- 启动阶段校验 `tools.max_steps`，小于 `1` 或大于 `10` 直接报错
+- CLI 初始化 ChatBot 时将配置值注入 `ToolLoopOptions.MaxSteps`
+- 工具执行包装路径返回 `cache_hit` 和稳定 `tool_call_key`
+- 每次工具调用返回前向 `ToolResult.Metadata` 写入 `step`、`cache_hit` 和 `tool_call_key`
+- 工具循环 step 结构化日志，包含 `request_id`、`step`、`max_steps`、`tool_name`、`tool_call_key`、`cache_hit`、`success` 和 `error_code`
+- 工具执行完成日志包含脱敏后的 `tool_result_json`，保留状态、错误、metadata 和 `content_chars`，不输出完整 `content`
+- README 和示例配置补充工具循环配置、边界和可观测性说明
+
+实现思路：
+- 配置字段放在顶层 `tools.max_steps`，继续兼容已有 `tools.web_search`
+- 配置加载阶段负责默认值填充和范围校验，避免运行时静默纠正误配置
+- `runToolLoop()` 负责 step 级日志，因为它同时知道 request、step、maxSteps、工具调用和工具结果
+- runCache 命中时不重复执行真实工具，但返回前会更新当前步骤的 `step` 和 `cache_hit=true`
+- 工具结果 metadata 保留原有业务字段，只覆盖运行时调试字段
+
+可观测性：
+- step 日志能直接判断第几步触发工具、是否缓存命中、工具是否成功和失败分类
+- `tool_call_key` 使用工具名和参数 hash 定位重复调用，不输出完整参数
+- `tool_result_json` 继续提供工具完成结果摘要，但通过空 `content` 和 `content_chars` 避免泄露文件正文或搜索结果全文
+- 新增 step 日志不输出完整文件内容、搜索结果全文或明显敏感内容
+- 工具反馈仍会回填给模型，但不写入用户可见 `history`
+
+当前边界：
+- 不新增工具能力
+- 不支持并行工具调用或一次响应中的多个工具调用
+- 不引入跨轮缓存、TTL 或副作用工具缓存策略
+- 不引入 OpenTelemetry、指标面板或 UI 工具轨迹展示
+- 仍使用文本协议模拟 Tool Calling，不接入 provider 原生 tool calling
+
+下一步：
+- 评估是否按工具类型声明更细粒度的可缓存性和脱敏策略
+- 评估是否将工具循环轨迹写入独立调试文件，而不是进入会话历史
+- 继续设计授权确认和高风险写入/命令类工具的安全边界

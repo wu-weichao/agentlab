@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -421,8 +423,17 @@ func TestExecuteToolWithRunCacheReusesSameToolCallKey(t *testing.T) {
 	if tool.calls != 1 {
 		t.Fatalf("expected tool to execute once, got %d", tool.calls)
 	}
-	if first.Content != second.Content {
-		t.Fatalf("expected cached result, got %q and %q", first.Content, second.Content)
+	if first.Result.Content != second.Result.Content {
+		t.Fatalf("expected cached result, got %q and %q", first.Result.Content, second.Result.Content)
+	}
+	if first.CacheHit {
+		t.Fatal("expected first execution to miss cache")
+	}
+	if !second.CacheHit {
+		t.Fatal("expected second execution to hit cache")
+	}
+	if first.Key != second.Key {
+		t.Fatalf("expected same tool call key, got %#v and %#v", first.Key, second.Key)
 	}
 }
 
@@ -454,6 +465,12 @@ func TestChatBotSendReusesRunCacheAcrossToolLoop(t *testing.T) {
 	}
 	if len(client.calls) != 3 {
 		t.Fatalf("expected 3 llm calls, got %d", len(client.calls))
+	}
+	secondToolFeedback := client.calls[2][len(client.calls[2])-1].Content
+	for _, want := range []string{`"step": 2`, `"cache_hit": true`, `"tool_call_key": "counting:`} {
+		if !strings.Contains(secondToolFeedback, want) {
+			t.Fatalf("expected cached tool feedback to contain %q, got %q", want, secondToolFeedback)
+		}
 	}
 }
 
@@ -514,6 +531,117 @@ func TestChatBotSendReturnsErrToolLoopExceededWithoutAssistant(t *testing.T) {
 	}
 }
 
+func TestChatBotSendUsesConfiguredMaxSteps(t *testing.T) {
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	tool := &countingTool{}
+	if err := executor.Register(tool); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{
+			{content: `{"tool_name":"counting","arguments":{"step":1}}`},
+		},
+	}
+	bot := NewChatBot(ChatBotOptions{
+		Client:        client,
+		Session:       sess,
+		ContextConfig: testContextConfig(),
+		Executor:      executor,
+		ToolLoopOptions: ToolLoopOptions{
+			MaxSteps: 1,
+		},
+	})
+
+	_, err := bot.Send(context.Background(), "只允许一步")
+	if !errors.Is(err, ErrToolLoopExceeded) {
+		t.Fatalf("expected ErrToolLoopExceeded, got %v", err)
+	}
+	if tool.calls != 1 {
+		t.Fatalf("expected 1 tool execution, got %d", tool.calls)
+	}
+}
+
+func TestChatBotSendAddsDiagnosticsToFailedToolResult(t *testing.T) {
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	if err := executor.Register(&failingTool{}); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{
+			{content: `{"tool_name":"failing","arguments":{},"reason":"验证失败路径"}`},
+			{content: "工具失败已说明。"},
+		},
+	}
+	bot := newTestChatBot(client, sess, executor)
+
+	if _, err := bot.Send(context.Background(), "触发失败工具"); err != nil {
+		t.Fatalf("Send returned error: %v", err)
+	}
+	feedback := client.calls[1][len(client.calls[1])-1].Content
+	for _, want := range []string{`"step": 1`, `"cache_hit": false`, `"tool_call_key": "failing:`, "planned failure"} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("expected failed tool feedback to contain %q, got %q", want, feedback)
+		}
+	}
+}
+
+func TestChatBotToolLoopStepLogAvoidsFullToolResultContent(t *testing.T) {
+	var buf bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	tool := &contentTool{content: "sensitive file content"}
+	if err := executor.Register(tool); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{
+			{content: `{"tool_name":"content","arguments":{"path":"secret.txt"},"reason":"读取内容"}`},
+			{content: "完成。"},
+		},
+	}
+	bot := newTestChatBot(client, sess, executor)
+
+	if _, err := bot.Send(context.Background(), "测试日志"); err != nil {
+		t.Fatalf("Send returned error: %v", err)
+	}
+
+	logText := buf.String()
+	for _, want := range []string{
+		"tool_loop_step=true",
+		"step=1",
+		"max_steps=3",
+		"tool_name=content",
+		"tool_call_key=content:",
+		"cache_hit=false",
+		"success=true",
+		"error_code=",
+		"tool_result_json=",
+		`"content":""`,
+		`"content_chars":22`,
+		`"cache_hit":false`,
+		`"step":1`,
+		`"tool_call_key":"content:`,
+	} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("expected log to contain %q, got %q", want, logText)
+		}
+	}
+	if strings.Contains(logText, "sensitive file content") || strings.Contains(logText, "secret.txt") {
+		t.Fatalf("step log should not include full content or arguments, got %q", logText)
+	}
+}
+
 func TestChatBotSendRejectsMultipleToolCallsWithoutExecuting(t *testing.T) {
 	sess := session.New("system prompt")
 	executor := tools.NewExecutor()
@@ -560,6 +688,12 @@ type countingTool struct {
 	calls int
 }
 
+type failingTool struct{}
+
+type contentTool struct {
+	content string
+}
+
 func (t *countingTool) Name() string {
 	return "counting"
 }
@@ -579,6 +713,54 @@ func (t *countingTool) Execute(_ context.Context, _ map[string]any) tools.ToolRe
 		Content: "execution result",
 		Metadata: map[string]any{
 			"calls": t.calls,
+		},
+	}
+}
+
+func (t *failingTool) Name() string {
+	return "failing"
+}
+
+func (t *failingTool) Description() string {
+	return "fails for tests"
+}
+
+func (t *failingTool) Parameters() []tools.Parameter {
+	return nil
+}
+
+func (t *failingTool) Execute(_ context.Context, _ map[string]any) tools.ToolResult {
+	return tools.ToolResult{
+		Success: false,
+		Error:   "planned failure",
+		Metadata: map[string]any{
+			"error_code": "planned",
+		},
+	}
+}
+
+func (t *contentTool) Name() string {
+	return "content"
+}
+
+func (t *contentTool) Description() string {
+	return "returns content"
+}
+
+func (t *contentTool) Parameters() []tools.Parameter {
+	return []tools.Parameter{{
+		Name:     "path",
+		Type:     "string",
+		Required: true,
+	}}
+}
+
+func (t *contentTool) Execute(_ context.Context, _ map[string]any) tools.ToolResult {
+	return tools.ToolResult{
+		Success: true,
+		Content: t.content,
+		Metadata: map[string]any{
+			"source": "fixture",
 		},
 	}
 }

@@ -35,6 +35,9 @@ func TestLoadReadsPromptTemplateConfig(t *testing.T) {
 	if cfg.Chat.Context.MaxChars != 12000 {
 		t.Fatalf("unexpected max chars: %d", cfg.Chat.Context.MaxChars)
 	}
+	if cfg.Tools.MaxSteps != DefaultToolMaxSteps {
+		t.Fatalf("expected default tools max steps %d, got %d", DefaultToolMaxSteps, cfg.Tools.MaxSteps)
+	}
 }
 
 func TestLoadReadsOptionalWebSearchConfig(t *testing.T) {
@@ -46,6 +49,7 @@ func TestLoadReadsOptionalWebSearchConfig(t *testing.T) {
 		"简洁",
 		"中文",
 	)+"tools:\n"+
+		"  max_steps: 5\n"+
 		"  web_search:\n"+
 		"    enabled: true\n"+
 		"    provider: custom\n"+
@@ -60,6 +64,31 @@ func TestLoadReadsOptionalWebSearchConfig(t *testing.T) {
 	}
 	if cfg.Tools.WebSearch.Provider != "custom" {
 		t.Fatalf("unexpected provider: %q", cfg.Tools.WebSearch.Provider)
+	}
+	if cfg.Tools.MaxSteps != 5 {
+		t.Fatalf("unexpected max steps: %d", cfg.Tools.MaxSteps)
+	}
+}
+
+func TestValidateRejectsInvalidToolMaxSteps(t *testing.T) {
+	tests := []struct {
+		name     string
+		maxSteps int
+	}{
+		{name: "zero", maxSteps: 0},
+		{name: "negative", maxSteps: -1},
+		{name: "too large", maxSteps: MaxToolMaxSteps + 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Tools.MaxSteps = tt.maxSteps
+
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
 	}
 }
 
@@ -159,6 +188,9 @@ func validConfig() *Config {
 				SummaryMaxChars:      2400,
 				EnableRollingSummary: true,
 			},
+		},
+		Tools: ToolsConfig{
+			MaxSteps: DefaultToolMaxSteps,
 		},
 	}
 }
