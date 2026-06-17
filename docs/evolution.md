@@ -245,3 +245,50 @@ runCache 执行思路：
 - 在多步 Tool Loop 中为缓存命中补充可观测 metadata，例如 `cache_hit=true`
 - 评估日志级别、脱敏和截断策略，避免完整 request body 在生产化场景中过度暴露上下文
 - 继续评估 provider 原生 tool calling，减少文本协议下模型重复请求工具的问题
+
+## v0.0.6 max-steps-tool-loop
+
+目标：把当前“单轮最多一次工具调用”升级为“同一次用户请求内允许多个顺序工具步骤”，并通过 `MaxSteps` 防止模型在工具调用阶段无限循环。
+
+新增：
+- `ToolLoopOptions{MaxSteps int}` 和默认最大步数 `3`
+- `ErrToolLoopExceeded`，用于在达到最大循环步数仍未生成最终回答时返回明确错误
+- `runToolLoop()`，统一编排模型响应解析、工具执行、工具结果回填和下一步模型调用
+- 同一次 `ChatBot.Send()` 内共享 runCache，使相同工具和相同标准化参数只真实执行一次
+- `ChatBotOptions`，将 ChatBot 初始化依赖和可选项收敛到单一构造入口
+- runCache 命中日志，输出 `tool_cache_hit`、`tool_cache_store`、`args_hash` 和缓存条目数
+- 多步工具链测试，覆盖 `tool -> tool -> final answer`
+- 重复工具调用缓存命中、跨轮缓存不复用、步数超限和多工具调用拒绝测试
+- LLM 输出约束：允许 thinking/reasoning，但最终用户可见回答必须进入 assistant `content`
+
+实现思路：
+- `ChatBot.Send()` 仍先写入用户消息并构建受控上下文，然后为本次请求创建 runCache
+- `runToolLoop()` 使用显式 `for step := 1; step <= MaxSteps; step++` 循环调用模型
+- 模型返回普通文本时视为最终回答并写入会话历史
+- 模型返回单个合法 `tool_call` 时，通过 `executeToolWithRunCache()` 执行或复用工具结果，再把工具反馈追加到本轮工作消息
+- 模型返回多个工具调用时立即返回 `ErrMultipleToolCalls`，不执行任何工具
+- 达到 `MaxSteps` 仍没有最终文本时返回 `ErrToolLoopExceeded`，不追加 assistant 消息
+- `executeToolWithRunCache()` 是唯一缓存观测入口，缓存未命中、写入和命中都会记录日志
+- OpenAI 兼容客户端只接受 `content` 作为有效 assistant 回答；如果只返回 `reasoning_content`，系统返回明确错误，不做文字匹配提取
+
+可观测性：
+- 工具执行日志继续输出工具名、成功状态、错误文本和完整单行 `ToolResult` JSON
+- 工具缓存日志可直接观察 `tool_cache_hit=true/false` 和 `tool_cache_store=true`
+- 缓存日志只输出参数 hash，不输出完整工具参数，降低上下文泄露风险
+- 多步循环日志包含当前 step 和最大步数，便于定位是哪一步触发工具调用或失败
+- OpenAI 兼容客户端仍保留完整 request body 日志，便于确认工具结果是否进入下一次请求
+
+当前边界：
+- `MaxSteps` 暂不接入配置文件，首版固定默认值为 `3`
+- 不支持并行工具调用，也不支持一次响应中的多个工具调用
+- 不引入跨轮工具缓存、TTL 或副作用工具缓存策略
+- 不把完整工具轨迹写入 `history`，工具反馈只存在于本轮工作消息
+- 仍使用文本协议模拟 Tool Calling，不接入 provider 原生 tool calling
+- 不从 `reasoning_content` 中按自然语言 marker 提取最终回答；字段归属应通过 prompt 约束或 provider 参数解决
+
+下一步：
+- 评估是否把 `MaxSteps` 暴露到 `configs/config.yaml`
+- 为 runCache 日志继续补充 step index、耗时等可观测 metadata
+- 继续评估日志脱敏与截断策略，避免完整 request body 在生产化场景中过度暴露上下文
+- 评估具体 provider 是否支持保留 reasoning 的同时稳定返回 assistant `content` 的请求参数
+- 在多步工具循环稳定后，再设计授权确认和高风险写入/命令类工具

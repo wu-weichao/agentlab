@@ -113,6 +113,9 @@ func (c *OpenAIClient) Chat(ctx context.Context, messages []Message) (*ChatRespo
 
 	content := strings.TrimSpace(completion.Choices[0].Message.Content)
 	if content == "" {
+		if strings.TrimSpace(completion.Choices[0].Message.ReasoningContent) != "" {
+			return nil, fmt.Errorf("openai response missing assistant content: response only contains reasoning_content")
+		}
 		return nil, fmt.Errorf("openai response missing assistant content")
 	}
 
@@ -127,8 +130,9 @@ type openAIChatRequest struct {
 }
 
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role             string `json:"role"`
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type openAIChatResponse struct {

@@ -17,41 +17,59 @@ import (
 	"agentlab/internal/tools"
 )
 
+const DefaultMaxToolLoopSteps = 3
+
+var ErrToolLoopExceeded = errors.New("tool loop exceeded max steps")
+
+type ToolLoopOptions struct {
+	MaxSteps int
+}
+
+type ChatBotOptions struct {
+	Client          llm.Client
+	Session         *session.Session
+	ContextConfig   config.ContextConfig
+	Executor        *tools.Executor
+	ToolLoopOptions ToolLoopOptions
+}
+
 // ChatBot 负责把 CLI 输入、会话上下文和模型调用串成一次完整对话。
 type ChatBot struct {
-	client     llm.Client
-	session    *session.Session
-	builder    *contextwindow.Builder
-	summarizer *contextwindow.Summarizer
-	contextCfg config.ContextConfig
-	executor   *tools.Executor
+	client          llm.Client
+	session         *session.Session
+	builder         *contextwindow.Builder
+	summarizer      *contextwindow.Summarizer
+	contextCfg      config.ContextConfig
+	executor        *tools.Executor
+	toolLoopOptions ToolLoopOptions
 }
 
 // NewChatBot 创建一个可执行多轮对话的 ChatBot 实例。
-func NewChatBot(client llm.Client, sess *session.Session, contextCfg config.ContextConfig) *ChatBot {
-	return NewChatBotWithTools(client, sess, contextCfg, nil)
-}
-
-// NewChatBotWithTools 创建一个带自定义工具执行器的 ChatBot，主要用于测试或后续真实搜索客户端接入。
-func NewChatBotWithTools(client llm.Client, sess *session.Session, contextCfg config.ContextConfig, executor *tools.Executor) *ChatBot {
-	if executor == nil {
-		executor = tools.NewDefaultExecutorForCurrentWorkspace(nil)
+// executor 为 nil 时使用当前工作区的默认工具集合；toolLoopOptions 为空值时使用默认工具循环配置。
+func NewChatBot(options ChatBotOptions) *ChatBot {
+	if options.Executor == nil {
+		options.Executor = tools.NewDefaultExecutorForCurrentWorkspace(nil)
 	}
-	sess.AppendSystemPromptSection(buildToolInstructions(executor))
+	options.Session.AppendSystemPromptSection(buildToolInstructions(options.Executor))
 	return &ChatBot{
-		client:     client,
-		session:    sess,
-		builder:    contextwindow.NewBuilder(),
-		summarizer: contextwindow.NewSummarizer(client),
-		contextCfg: contextCfg,
-		executor:   executor,
+		client:          options.Client,
+		session:         options.Session,
+		builder:         contextwindow.NewBuilder(),
+		summarizer:      contextwindow.NewSummarizer(options.Client),
+		contextCfg:      options.ContextConfig,
+		executor:        options.Executor,
+		toolLoopOptions: normalizeToolLoopOptions(options.ToolLoopOptions),
 	}
 }
 
-// Send 执行一轮对话：记录用户输入，调用模型，再把回复写回会话。
-// 首版 Tool Calling 的设计边界是“单轮最多一次工具调用”：
-// 第一次模型响应可以是普通文本，也可以是结构化 tool_call；
-// 如果是 tool_call，则执行工具并把 tool_result 回填给模型生成最终文本。
+func normalizeToolLoopOptions(options ToolLoopOptions) ToolLoopOptions {
+	if options.MaxSteps <= 0 {
+		options.MaxSteps = DefaultMaxToolLoopSteps
+	}
+	return options
+}
+
+// Send 执行一轮对话：记录用户输入，调用模型和受控工具循环，再把最终回复写回会话。
 func (b *ChatBot) Send(ctx context.Context, input string) (string, error) {
 	ctx, requestID := requestctx.WithNewRequestID(ctx)
 	trimmed := strings.TrimSpace(input)
@@ -66,27 +84,12 @@ func (b *ChatBot) Send(ctx context.Context, input string) (string, error) {
 		return "", err
 	}
 
-	resp, err := b.client.Chat(ctx, buildResult.Messages)
+	runCache := map[tools.ToolCallKey]tools.ToolResult{}
+	resp, err := b.runToolLoop(ctx, buildResult.Messages, runCache)
 	if err != nil {
-		log.Printf("[chatbot] request_id=%s 模型调用失败: %v", requestID, err)
+		log.Printf("[chatbot] request_id=%s 工具循环失败: %v", requestID, err)
 		return "", err
 	}
-
-	// 识别工具调用只发生在第一次模型响应后。
-	// ParseToolCall 返回 ErrToolCallNotPresent 时表示普通回复，不应当视为错误。
-	if call, err := tools.ParseToolCall(resp.Content); err == nil {
-		log.Printf("[chatbot] request_id=%s 检测到工具调用 tool=%s reason=%q", requestID, call.ToolName, call.Reason)
-		resp, err = b.completeToolCall(ctx, buildResult.Messages, *call)
-		if err != nil {
-			log.Printf("[chatbot] request_id=%s 工具调用闭环失败: %v", requestID, err)
-			return "", err
-		}
-	} else if errors.Is(err, tools.ErrMultipleToolCalls) {
-		return "", tools.ErrMultipleToolCalls
-	} else if !errors.Is(err, tools.ErrToolCallNotPresent) {
-		return "", err
-	}
-
 	b.session.AddAssistantMessage(resp.Content)
 	log.Printf("[chatbot] request_id=%s 本轮对话完成，回复长度=%d", requestID, len(resp.Content))
 	return resp.Content, nil
@@ -106,6 +109,7 @@ func buildToolInstructions(executor *tools.Executor) string {
 func renderToolInstructions(specs []tools.ToolSpec) string {
 	var builder strings.Builder
 	builder.WriteString("[工具能力]\n")
+	builder.WriteString("即使模型内部进行 thinking/reasoning，最终给用户看的回答也必须输出在 assistant message 的 content 中，不能只输出在 reasoning_content 或 thinking 字段中。\n")
 	builder.WriteString("你可以在确实需要外部能力时调用工具。若不需要工具，请直接正常回答。\n")
 	builder.WriteString("如果需要调用工具，你的本次回复必须只输出一个 JSON 对象，不要包含解释、Markdown 或其他文本。\n")
 	builder.WriteString("JSON 格式如下：\n")
@@ -147,33 +151,70 @@ func renderToolInstructions(specs []tools.ToolSpec) string {
 		builder.WriteString("\n")
 	}
 
-	builder.WriteString("\n约束：每轮最多调用一个工具；不要请求未列出的工具；如果上下文中已经包含“工具执行结果”，说明工具调用阶段已经结束，你必须直接给出最终回答，禁止再次输出 tool_call JSON。")
+	builder.WriteString("\n约束：每次回复最多请求一个工具；不要请求未列出的工具；不要重复请求相同工具和相同参数；如果已有工具结果足以回答用户问题，必须直接给出最终回答；只有当已有工具结果仍不足以完成回答时，才继续请求另一个工具。")
 	return builder.String()
 }
 
-// completeToolCall 执行单次工具调用闭环。
-// requestMessages 是已经通过上下文预算控制后的基础模型请求，不包含第一次请求专用的工具说明。
-// 工具结果只追加到本轮二次请求中，
-// 不直接写入 Session，避免内部协议污染用户可见历史。
-func (b *ChatBot) completeToolCall(ctx context.Context, requestMessages []llm.Message, call tools.ToolCall) (*llm.ChatResponse, error) {
-	runCache := map[tools.ToolCallKey]tools.ToolResult{}
-	result, err := executeToolWithRunCache(ctx, b.executor, call, runCache)
-	if err != nil {
-		return nil, err
-	}
-	resultJSON := formatToolResultLogJSON(result)
-	log.Printf(
-		"[chatbot] request_id=%s 工具执行完成 tool=%s success=%t error=%q tool_result_json=%s",
-		requestctx.FromContext(ctx),
-		call.ToolName,
-		result.Success,
-		result.Error,
-		resultJSON,
-	)
-
+// runToolLoop 在同一次用户请求内执行受 MaxSteps 限制的顺序工具循环。
+// 工具轨迹只保存在本轮工作消息中，不写入 Session。
+func (b *ChatBot) runToolLoop(
+	ctx context.Context,
+	requestMessages []llm.Message,
+	runCache map[tools.ToolCallKey]tools.ToolResult,
+) (*llm.ChatResponse, error) {
 	messages := append([]llm.Message(nil), requestMessages...)
+	maxSteps := normalizeToolLoopOptions(b.toolLoopOptions).MaxSteps
+
+	for step := 1; step <= maxSteps; step++ {
+		resp, err := b.client.Chat(ctx, messages)
+		if err != nil {
+			log.Printf("[chatbot] request_id=%s 模型调用失败 step=%d: %v", requestctx.FromContext(ctx), step, err)
+			return nil, err
+		}
+
+		call, err := tools.ParseToolCall(resp.Content)
+		if errors.Is(err, tools.ErrToolCallNotPresent) {
+			return resp, nil
+		}
+		if errors.Is(err, tools.ErrMultipleToolCalls) {
+			return nil, tools.ErrMultipleToolCalls
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		log.Printf(
+			"[chatbot] request_id=%s 检测到工具调用 step=%d/%d tool=%s reason=%q",
+			requestctx.FromContext(ctx),
+			step,
+			maxSteps,
+			call.ToolName,
+			call.Reason,
+		)
+		result, err := executeToolWithRunCache(ctx, b.executor, *call, runCache)
+		if err != nil {
+			return nil, err
+		}
+		resultJSON := formatToolResultLogJSON(result)
+		log.Printf(
+			"[chatbot] request_id=%s 工具执行完成 step=%d/%d tool=%s success=%t error=%q tool_result_json=%s",
+			requestctx.FromContext(ctx),
+			step,
+			maxSteps,
+			call.ToolName,
+			result.Success,
+			result.Error,
+			resultJSON,
+		)
+		messages = appendToolFeedback(messages, *call, result)
+	}
+
+	return nil, ErrToolLoopExceeded
+}
+
+func appendToolFeedback(messages []llm.Message, call tools.ToolCall, result tools.ToolResult) []llm.Message {
 	// 用 assistant 消息保留“模型请求工具”的语义，再用 user 消息把工具结果作为下一步输入回填。
-	// 一些 OpenAI 兼容模型会弱化后置 system 消息，使用 user 消息能更明确地推进到最终回答阶段。
+	// 一些 OpenAI 兼容模型会弱化后置 system 消息，使用 user 消息能更明确地推动下一步决策。
 	messages = append(messages, llm.Message{
 		Role:    llm.RoleAssistant,
 		Content: "请求调用工具: " + call.ToolName + "\n原因: " + call.Reason,
@@ -182,27 +223,7 @@ func (b *ChatBot) completeToolCall(ctx context.Context, requestMessages []llm.Me
 		Role:    llm.RoleUser,
 		Content: buildToolResultMessage(result),
 	})
-
-	resp, err := b.client.Chat(ctx, messages)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := tools.ParseToolCall(resp.Content); err == nil {
-		// 首版不递归执行第二个工具。若模型在 FINAL_ANSWER 阶段仍输出 tool_call，
-		// 说明它没有遵守回填指令；此时直接用已经拿到的 ToolResult 生成兜底回答。
-		log.Printf(
-			"[chatbot] request_id=%s FINAL_ANSWER 阶段仍收到 tool_call，使用工具结果兜底回答 tool=%s",
-			requestctx.FromContext(ctx),
-			call.ToolName,
-		)
-		return &llm.ChatResponse{Content: fallbackAnswerFromToolResult(call, result)}, nil
-	} else if errors.Is(err, tools.ErrMultipleToolCalls) {
-		return nil, fmt.Errorf("%w after tool result", tools.ErrMultipleToolCalls)
-	} else if !errors.Is(err, tools.ErrToolCallNotPresent) {
-		return nil, err
-	}
-
-	return resp, nil
+	return messages
 }
 
 func formatToolResultLogJSON(result tools.ToolResult) string {
@@ -214,8 +235,9 @@ func formatToolResultLogJSON(result tools.ToolResult) string {
 }
 
 func buildToolResultMessage(result tools.ToolResult) string {
-	return "工具执行结果如下。工具调用阶段已经结束。\n" +
-		"你现在处于 FINAL_ANSWER 阶段：只能基于该结果直接回答用户原问题；禁止再次请求工具调用；禁止输出 tool_call JSON；禁止输出 Markdown 代码块。\n" +
+	return "工具执行结果如下。\n" +
+		"如果该结果已经足以回答用户原问题，你现在必须进入 FINAL_ANSWER 阶段并直接回答；不要输出 tool_call JSON；不要输出 Markdown 代码块。\n" +
+		"只有当该结果仍不足以完成回答时，才可以继续请求另一个不同工具；禁止重复请求相同工具和相同参数。\n" +
 		tools.FormatToolResult(result)
 }
 

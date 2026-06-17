@@ -16,9 +16,9 @@ import (
 
 func TestChatBotSendAppendsAssistantOnSuccess(t *testing.T) {
 	sess := session.New("system prompt")
-	bot := NewChatBot(&scriptedChatClient{
+	bot := newTestChatBot(&scriptedChatClient{
 		responses: []scriptedChatResponse{{content: "hello"}},
-	}, sess, testContextConfig())
+	}, sess, nil)
 
 	reply, err := bot.Send(context.Background(), "hi")
 	if err != nil {
@@ -42,7 +42,7 @@ func TestChatBotStoresToolInstructionsInSystemPromptAtStartup(t *testing.T) {
 	client := &scriptedChatClient{
 		responses: []scriptedChatResponse{{content: "hello"}},
 	}
-	bot := NewChatBot(client, sess, testContextConfig())
+	bot := newTestChatBot(client, sess, nil)
 
 	if !strings.Contains(sess.SystemPrompt(), "可用工具") {
 		t.Fatalf("expected session system prompt to contain tool instructions, got %q", sess.SystemPrompt())
@@ -64,6 +64,14 @@ func TestChatBotStoresToolInstructionsInSystemPromptAtStartup(t *testing.T) {
 			t.Fatalf("expected system prompt to contain %q, got %q", want, first.Content)
 		}
 	}
+	for _, want := range []string{"assistant message 的 content", "不能只输出在 reasoning_content", "每次回复最多请求一个工具", "不要重复请求相同工具和相同参数", "已有工具结果足以回答"} {
+		if !strings.Contains(first.Content, want) {
+			t.Fatalf("expected system prompt to contain sequential tool loop guidance %q, got %q", want, first.Content)
+		}
+	}
+	if strings.Contains(first.Content, "每轮最多调用一个工具") {
+		t.Fatalf("system prompt should not keep old single-tool limit, got %q", first.Content)
+	}
 }
 
 func TestChatBotBuildsToolInstructionsAtStartup(t *testing.T) {
@@ -75,7 +83,7 @@ func TestChatBotBuildsToolInstructionsAtStartup(t *testing.T) {
 	client := &scriptedChatClient{
 		responses: []scriptedChatResponse{{content: "hello"}},
 	}
-	bot := NewChatBotWithTools(client, sess, testContextConfig(), executor)
+	bot := newTestChatBot(client, sess, executor)
 
 	// ChatBot 启动后再修改 executor，不应改变已缓存的工具说明。
 	if err := executor.Register(tools.NewCalculatorTool()); err != nil {
@@ -96,9 +104,9 @@ func TestChatBotBuildsToolInstructionsAtStartup(t *testing.T) {
 
 func TestChatBotSendDoesNotAppendAssistantOnFailure(t *testing.T) {
 	sess := session.New("system prompt")
-	bot := NewChatBot(&scriptedChatClient{
+	bot := newTestChatBot(&scriptedChatClient{
 		responses: []scriptedChatResponse{{err: errors.New("boom")}},
-	}, sess, testContextConfig())
+	}, sess, nil)
 
 	_, err := bot.Send(context.Background(), "hi")
 	if err == nil {
@@ -128,12 +136,17 @@ func TestChatBotSendBuildsSummaryWhenBudgetExceeded(t *testing.T) {
 			{content: "latest"},
 		},
 	}
-	bot := NewChatBotWithTools(client, sess, config.ContextConfig{
-		MaxChars:             380,
-		KeepRecentTurns:      1,
-		SummaryMaxChars:      120,
-		EnableRollingSummary: true,
-	}, tools.NewExecutor())
+	bot := NewChatBot(ChatBotOptions{
+		Client:  client,
+		Session: sess,
+		ContextConfig: config.ContextConfig{
+			MaxChars:             380,
+			KeepRecentTurns:      1,
+			SummaryMaxChars:      120,
+			EnableRollingSummary: true,
+		},
+		Executor: tools.NewExecutor(),
+	})
 
 	reply, err := bot.Send(context.Background(), "第三轮用户输入")
 	if err != nil {
@@ -174,12 +187,17 @@ func TestChatBotSendCompressesExistingSummaryWhenRebuildStillExceedsBudget(t *te
 			{content: "final reply"},
 		},
 	}
-	bot := NewChatBotWithTools(client, sess, config.ContextConfig{
-		MaxChars:             280,
-		KeepRecentTurns:      1,
-		SummaryMaxChars:      120,
-		EnableRollingSummary: true,
-	}, tools.NewExecutor())
+	bot := NewChatBot(ChatBotOptions{
+		Client:  client,
+		Session: sess,
+		ContextConfig: config.ContextConfig{
+			MaxChars:             280,
+			KeepRecentTurns:      1,
+			SummaryMaxChars:      120,
+			EnableRollingSummary: true,
+		},
+		Executor: tools.NewExecutor(),
+	})
 
 	reply, err := bot.Send(context.Background(), "当前用户继续提问")
 	if err != nil {
@@ -205,7 +223,7 @@ func TestChatBotSendCompletesCalculatorToolCall(t *testing.T) {
 			{content: "计算结果是 7。"},
 		},
 	}
-	bot := NewChatBotWithTools(client, sess, testContextConfig(), executor)
+	bot := newTestChatBot(client, sess, executor)
 
 	reply, err := bot.Send(context.Background(), "算一下 1 + 2 * 3")
 	if err != nil {
@@ -225,7 +243,7 @@ func TestChatBotSendCompletesCalculatorToolCall(t *testing.T) {
 		t.Fatal("tool instructions should live in the global system prompt")
 	}
 	if !strings.Contains(finalRequest[len(finalRequest)-1].Content, "FINAL_ANSWER") {
-		t.Fatalf("expected final request to disable recursive tools, got %q", finalRequest[len(finalRequest)-1].Content)
+		t.Fatalf("expected final request to guide final answer, got %q", finalRequest[len(finalRequest)-1].Content)
 	}
 	if !strings.Contains(finalRequest[len(finalRequest)-1].Content, "工具执行结果如下") {
 		t.Fatalf("expected final request to include tool result, got %q", finalRequest[len(finalRequest)-1].Content)
@@ -247,7 +265,7 @@ func TestChatBotSendCompletesTimeToolCall(t *testing.T) {
 			{content: "当前时间已查询。"},
 		},
 	}
-	bot := NewChatBotWithTools(client, sess, testContextConfig(), executor)
+	bot := newTestChatBot(client, sess, executor)
 
 	reply, err := bot.Send(context.Background(), "现在几点")
 	if err != nil {
@@ -275,7 +293,7 @@ func TestChatBotSendCompletesFileReadToolCall(t *testing.T) {
 			{content: "文件内容是 file context。"},
 		},
 	}
-	bot := NewChatBotWithTools(client, sess, testContextConfig(), executor)
+	bot := newTestChatBot(client, sess, executor)
 
 	reply, err := bot.Send(context.Background(), "读 notes")
 	if err != nil {
@@ -305,7 +323,7 @@ func TestChatBotSendCompletesWebSearchToolCall(t *testing.T) {
 			{content: "搜索工具返回了 1 条结果。"},
 		},
 	}
-	bot := NewChatBotWithTools(client, sess, testContextConfig(), executor)
+	bot := newTestChatBot(client, sess, executor)
 
 	reply, err := bot.Send(context.Background(), "查一下 tool calling")
 	if err != nil {
@@ -316,7 +334,7 @@ func TestChatBotSendCompletesWebSearchToolCall(t *testing.T) {
 	}
 }
 
-func TestChatBotSendFallsBackWhenFinalAnswerRequestsToolAgain(t *testing.T) {
+func TestChatBotSendCompletesSequentialToolCalls(t *testing.T) {
 	sess := session.New("system prompt")
 	executor := tools.NewExecutor()
 	if err := executor.Register(tools.NewCalculatorTool()); err != nil {
@@ -326,20 +344,24 @@ func TestChatBotSendFallsBackWhenFinalAnswerRequestsToolAgain(t *testing.T) {
 		responses: []scriptedChatResponse{
 			{content: `{"tool_name":"calculator","arguments":{"expression":"1 + 1"}}`},
 			{content: `{"tool_name":"calculator","arguments":{"expression":"2 + 2"}}`},
+			{content: "两次计算结果分别是 2 和 4。"},
 		},
 	}
-	bot := NewChatBotWithTools(client, sess, testContextConfig(), executor)
+	bot := newTestChatBot(client, sess, executor)
 
 	reply, err := bot.Send(context.Background(), "算一下")
 	if err != nil {
 		t.Fatalf("Send returned error: %v", err)
 	}
-	if reply != "计算结果是 2。" {
-		t.Fatalf("unexpected fallback reply: %q", reply)
+	if reply != "两次计算结果分别是 2 和 4。" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(client.calls) != 3 {
+		t.Fatalf("expected 3 llm calls, got %d", len(client.calls))
 	}
 	history := sess.History()
 	if len(history) != 3 || history[len(history)-1].Role != llm.RoleAssistant {
-		t.Fatalf("expected fallback assistant appended, got %#v", history)
+		t.Fatalf("expected final assistant appended, got %#v", history)
 	}
 }
 
@@ -355,7 +377,7 @@ func TestChatBotSendDoesNotAppendAssistantWhenSecondModelCallFails(t *testing.T)
 			{err: errors.New("second call failed")},
 		},
 	}
-	bot := NewChatBotWithTools(client, sess, testContextConfig(), executor)
+	bot := newTestChatBot(client, sess, executor)
 
 	_, err := bot.Send(context.Background(), "算一下")
 	if err == nil {
@@ -401,6 +423,121 @@ func TestExecuteToolWithRunCacheReusesSameToolCallKey(t *testing.T) {
 	}
 	if first.Content != second.Content {
 		t.Fatalf("expected cached result, got %q and %q", first.Content, second.Content)
+	}
+}
+
+func TestChatBotSendReusesRunCacheAcrossToolLoop(t *testing.T) {
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	tool := &countingTool{}
+	if err := executor.Register(tool); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{
+			{content: `{"tool_name":"counting","arguments":{"a":1,"b":"same"},"reason":"第一次调用"}`},
+			{content: `{"tool_name":"counting","arguments":{"b":"same","a":1.0},"reason":"重复确认"}`},
+			{content: "已完成。"},
+		},
+	}
+	bot := newTestChatBot(client, sess, executor)
+
+	reply, err := bot.Send(context.Background(), "测试重复工具调用")
+	if err != nil {
+		t.Fatalf("Send returned error: %v", err)
+	}
+	if reply != "已完成。" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if tool.calls != 1 {
+		t.Fatalf("expected duplicate tool call to hit run cache, got %d executions", tool.calls)
+	}
+	if len(client.calls) != 3 {
+		t.Fatalf("expected 3 llm calls, got %d", len(client.calls))
+	}
+}
+
+func TestChatBotSendDoesNotReuseRunCacheAcrossRequests(t *testing.T) {
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	tool := &countingTool{}
+	if err := executor.Register(tool); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{
+			{content: `{"tool_name":"counting","arguments":{"a":1},"reason":"第一次请求"}`},
+			{content: "第一次完成。"},
+			{content: `{"tool_name":"counting","arguments":{"a":1},"reason":"第二次请求"}`},
+			{content: "第二次完成。"},
+		},
+	}
+	bot := newTestChatBot(client, sess, executor)
+
+	if _, err := bot.Send(context.Background(), "第一次"); err != nil {
+		t.Fatalf("first Send returned error: %v", err)
+	}
+	if _, err := bot.Send(context.Background(), "第二次"); err != nil {
+		t.Fatalf("second Send returned error: %v", err)
+	}
+	if tool.calls != 2 {
+		t.Fatalf("expected cache to be scoped per Send, got %d executions", tool.calls)
+	}
+}
+
+func TestChatBotSendReturnsErrToolLoopExceededWithoutAssistant(t *testing.T) {
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	tool := &countingTool{}
+	if err := executor.Register(tool); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{
+			{content: `{"tool_name":"counting","arguments":{"step":1}}`},
+			{content: `{"tool_name":"counting","arguments":{"step":2}}`},
+			{content: `{"tool_name":"counting","arguments":{"step":3}}`},
+		},
+	}
+	bot := newTestChatBot(client, sess, executor)
+
+	_, err := bot.Send(context.Background(), "一直调用工具")
+	if !errors.Is(err, ErrToolLoopExceeded) {
+		t.Fatalf("expected ErrToolLoopExceeded, got %v", err)
+	}
+	history := sess.History()
+	if len(history) != 2 || history[len(history)-1].Role != llm.RoleUser {
+		t.Fatalf("expected no assistant appended after max steps, got %#v", history)
+	}
+	if tool.calls != DefaultMaxToolLoopSteps {
+		t.Fatalf("expected %d tool executions, got %d", DefaultMaxToolLoopSteps, tool.calls)
+	}
+}
+
+func TestChatBotSendRejectsMultipleToolCallsWithoutExecuting(t *testing.T) {
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	tool := &countingTool{}
+	if err := executor.Register(tool); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{
+			{content: `{"tool_calls":[{"tool_name":"counting","arguments":{"a":1}},{"tool_name":"counting","arguments":{"a":2}}]}`},
+		},
+	}
+	bot := newTestChatBot(client, sess, executor)
+
+	_, err := bot.Send(context.Background(), "一次请求多个工具")
+	if !errors.Is(err, tools.ErrMultipleToolCalls) {
+		t.Fatalf("expected ErrMultipleToolCalls, got %v", err)
+	}
+	if tool.calls != 0 {
+		t.Fatalf("expected multiple tool calls to execute no tools, got %d", tool.calls)
+	}
+	history := sess.History()
+	if len(history) != 2 || history[len(history)-1].Role != llm.RoleUser {
+		t.Fatalf("expected no assistant appended, got %#v", history)
 	}
 }
 
@@ -465,6 +602,15 @@ func (c *scriptedChatClient) Chat(_ context.Context, messages []llm.Message) (*l
 		return nil, next.err
 	}
 	return &llm.ChatResponse{Content: next.content}, nil
+}
+
+func newTestChatBot(client llm.Client, sess *session.Session, executor *tools.Executor) *ChatBot {
+	return NewChatBot(ChatBotOptions{
+		Client:        client,
+		Session:       sess,
+		ContextConfig: testContextConfig(),
+		Executor:      executor,
+	})
 }
 
 func testContextConfig() config.ContextConfig {

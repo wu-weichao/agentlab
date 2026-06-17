@@ -86,7 +86,11 @@ func newChatCommand(configPath *string) *cobra.Command {
 			}
 
 			sess := session.New(renderedPrompt)
-			bot := app.NewChatBot(client, sess, cfg.Chat.Context)
+			bot := app.NewChatBot(app.ChatBotOptions{
+				Client:        client,
+				Session:       sess,
+				ContextConfig: cfg.Chat.Context,
+			})
 
 			fmt.Println("AI Agent Lab ChatBot")
 			fmt.Println("Type 'exit' or 'quit' to leave.")
