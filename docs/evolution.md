@@ -332,3 +332,41 @@ runCache 执行思路：
 - 评估是否按工具类型声明更细粒度的可缓存性和脱敏策略
 - 评估是否将工具循环轨迹写入独立调试文件，而不是进入会话历史
 - 继续设计授权确认和高风险写入/命令类工具的安全边界
+
+## v0.0.8 agent-runtime-lite
+
+目标：将已经膨胀的 ChatBot Runtime 职责抽取为轻量 `Agent`，建立后续 ToolCache、Memory 和 Workflow 演进所需的稳定运行时边界，同时保持现有 CLI 和用户可见行为兼容。
+
+新增：
+- `internal/agent` 包，提供 `Agent`、`Options` 和 `Agent.Run(ctx, input)`
+- Agent 独立持有 LLM 客户端、Session、上下文 Builder、Summarizer、工具 Executor 和工具循环选项
+- Agent 层普通聊天、上下文摘要、单工具、多步工具、请求内去重、失败路径和日志脱敏测试
+- app 层 ChatBot 委托测试，覆盖构造参数映射、成功写回、错误传播和最大步数兼容
+
+实现思路：
+- `Agent.Run()` 统一建立 request_id、写入用户输入、准备受控上下文、创建本轮 runCache、执行工具循环并写入最终 assistant 回答
+- 上下文裁剪、滚动摘要更新和摘要再压缩整体迁移到 Agent，继续复用现有 `contextwindow` 与 `session` 模块
+- 工具说明在 `agent.New()` 阶段基于实际 Executor 生成并固化到 Session system prompt，单次 Run 不重复追加
+- 工具循环、ToolCallKey 去重、结果回填和 MaxSteps 控制迁移到 Agent；runCache 仍只存在于单次 Run 内
+- `internal/app.ChatBot` 收敛为兼容适配器，保留 `ChatBotOptions` 和 `Send()`，内部委托 `Agent.Run()`
+- app 层通过类型和错误别名保留原有 ToolLoop 配置入口，CLI 无需改变组装和调用方式
+
+可观测性：
+- 直接调用 `Agent.Run()` 也会自动创建 request_id，并贯穿摘要、LLM 和工具循环日志
+- 工具循环继续记录 step、max_steps、tool_name、tool_call_key、cache_hit、success 和 error_code
+- 工具结果日志继续只保留状态、metadata 和 content_chars，不输出完整文件内容、搜索结果或工具参数
+- Runtime 日志组件标识从 chatbot 调整为 agent，结构化诊断字段保持兼容
+
+当前边界：
+- 不引入跨轮 ToolCache、TTL、缓存持久化或副作用工具缓存策略
+- 不修改 Tool、LLM Client、Session 或配置文件契约
+- 不新增工具，不接入 provider 原生 Tool Calling
+- 不实现 Planner、Workflow、Memory、RAG 或 Multi-Agent
+- ChatBot 兼容层暂时保留，CLI 仍通过 `ChatBot.Send()` 使用 Agent Runtime
+- Session 仍面向当前单线程 CLI 使用，不声明并发安全
+
+下一步：
+- 评估 CLI 是否逐步直接依赖 Agent，并明确 ChatBot 兼容层的废弃计划
+- 在 Agent Runtime 边界上设计跨轮 ToolCache 的生命周期、TTL 和副作用工具策略
+- 当出现第二种上下文或工具循环实现时，再评估是否提炼窄接口
+- 继续设计高风险工具授权、Memory 和 Workflow 能力
