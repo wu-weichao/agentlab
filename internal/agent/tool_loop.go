@@ -35,7 +35,7 @@ func normalizeToolLoopOptions(options ToolLoopOptions) ToolLoopOptions {
 	return options
 }
 
-func buildToolInstructions(executor *tools.Executor) string {
+func buildToolInstructions(executor *tools.Executor, mode llm.ToolCallingMode) string {
 	if executor == nil {
 		return ""
 	}
@@ -43,7 +43,18 @@ func buildToolInstructions(executor *tools.Executor) string {
 	if len(specs) == 0 {
 		return ""
 	}
+	if mode == llm.ToolCallingModeNative {
+		return renderNativeToolInstructions()
+	}
 	return renderToolInstructions(specs)
+}
+
+func renderNativeToolInstructions() string {
+	return "[工具能力]\n" +
+		"工具名称、描述和参数由模型接口的原生工具定义提供。\n" +
+		"即使模型内部进行 thinking/reasoning，最终给用户看的回答也必须输出在 assistant message 的 content 中，不能只输出在 reasoning_content 或 thinking 字段中。\n" +
+		"你可以在确实需要外部能力时调用工具。若不需要工具，请直接正常回答。\n" +
+		"约束：每次回复最多请求一个工具；不要请求未提供的工具；不要重复请求相同工具和相同参数；如果已有工具结果足以回答用户问题，必须直接给出最终回答；只有当已有工具结果仍不足以完成回答时，才继续请求另一个工具。"
 }
 
 func renderToolInstructions(specs []tools.ToolSpec) string {
@@ -106,13 +117,20 @@ func (b *Agent) runToolLoop(
 	maxSteps := normalizeToolLoopOptions(b.toolLoopOptions).MaxSteps
 
 	for step := 1; step <= maxSteps; step++ {
-		resp, err := b.client.Chat(ctx, messages)
+		request := llm.ChatRequest{
+			Messages:        messages,
+			ToolCallingMode: b.toolCallingMode,
+		}
+		if b.toolCallingMode == llm.ToolCallingModeNative {
+			request.Tools = b.executor.Specs()
+		}
+		resp, err := b.client.Chat(ctx, request)
 		if err != nil {
 			log.Printf("[agent] request_id=%s 模型调用失败 step=%d: %v", requestctx.FromContext(ctx), step, err)
 			return nil, err
 		}
 
-		call, err := tools.ParseToolCall(resp.Content)
+		call, err := b.toolCallFromResponse(resp)
 		if errors.Is(err, tools.ErrToolCallNotPresent) {
 			return resp, nil
 		}
@@ -124,12 +142,14 @@ func (b *Agent) runToolLoop(
 		}
 
 		log.Printf(
-			"[agent] request_id=%s 检测到工具调用 step=%d/%d tool=%s reason=%q",
+			"[agent] request_id=%s 检测到工具调用 tool_calling_mode=%s tool_calls_count=1 tool_calls_parse_status=success step=%d/%d tool=%s reason=%q tool_call_json=%s",
 			requestctx.FromContext(ctx),
+			b.toolCallingMode,
 			step,
 			maxSteps,
 			call.ToolName,
 			call.Reason,
+			formatToolCallLogJSON(*call),
 		)
 		execution, err := executeToolWithRunCache(ctx, b.executor, *call, runCache)
 		if err != nil {
@@ -147,10 +167,37 @@ func (b *Agent) runToolLoop(
 			result.Error,
 			formatToolResultLogJSON(result),
 		)
-		messages = appendToolFeedback(messages, *call, result)
+		if b.toolCallingMode == llm.ToolCallingModeNative {
+			messages = appendNativeToolFeedback(messages, *call, result)
+		} else {
+			messages = appendTextToolFeedback(messages, *call, result)
+		}
 	}
 
 	return nil, ErrToolLoopExceeded
+}
+
+func (b *Agent) toolCallFromResponse(resp *llm.ChatResponse) (*tools.ToolCall, error) {
+	if b.toolCallingMode == llm.ToolCallingModeNative {
+		if len(resp.ToolCalls) == 0 {
+			return nil, tools.ErrToolCallNotPresent
+		}
+		if len(resp.ToolCalls) > 1 {
+			return nil, tools.ErrMultipleToolCalls
+		}
+		call := resp.ToolCalls[0]
+		if strings.TrimSpace(call.ID) == "" {
+			return nil, fmt.Errorf("%w: native tool call id is required", tools.ErrInvalidArguments)
+		}
+		if strings.TrimSpace(call.ToolName) == "" {
+			return nil, fmt.Errorf("%w: tool_name is required", tools.ErrInvalidArguments)
+		}
+		if call.Arguments == nil {
+			call.Arguments = map[string]any{}
+		}
+		return &call, nil
+	}
+	return tools.ParseToolCall(resp.Content)
 }
 
 func executeToolWithRunCache(
@@ -210,7 +257,7 @@ func executeToolWithRunCache(
 	}, nil
 }
 
-func appendToolFeedback(messages []llm.Message, call tools.ToolCall, result tools.ToolResult) []llm.Message {
+func appendTextToolFeedback(messages []llm.Message, call tools.ToolCall, result tools.ToolResult) []llm.Message {
 	// 用 assistant 消息保留“模型请求工具”的语义，再用 user 消息把工具结果作为下一步输入回填。
 	// 一些 OpenAI 兼容模型会弱化后置 system 消息，使用 user 消息能更明确地推动下一步决策。
 	messages = append(messages, llm.Message{
@@ -220,6 +267,20 @@ func appendToolFeedback(messages []llm.Message, call tools.ToolCall, result tool
 	messages = append(messages, llm.Message{
 		Role:    llm.RoleUser,
 		Content: buildToolResultMessage(result),
+	})
+	return messages
+}
+
+func appendNativeToolFeedback(messages []llm.Message, call tools.ToolCall, result tools.ToolResult) []llm.Message {
+	messages = append(messages, llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []tools.ToolCall{call},
+	})
+	messages = append(messages, llm.Message{
+		Role:       llm.RoleTool,
+		Content:    tools.FormatToolResult(result),
+		ToolCallID: call.ID,
+		ToolName:   call.ToolName,
 	})
 	return messages
 }
@@ -270,22 +331,17 @@ func toolResultErrorCode(result tools.ToolResult) string {
 }
 
 func formatToolResultLogJSON(result tools.ToolResult) string {
-	logResult := struct {
-		Success      bool           `json:"success"`
-		Content      string         `json:"content"`
-		ContentChars int            `json:"content_chars"`
-		Error        string         `json:"error,omitempty"`
-		Metadata     map[string]any `json:"metadata,omitempty"`
-	}{
-		Success:      result.Success,
-		Content:      "",
-		ContentChars: len(result.Content),
-		Error:        result.Error,
-		Metadata:     result.Metadata,
-	}
-	data, err := json.Marshal(logResult)
+	data, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Sprintf(`{"success":false,"error":"marshal tool result log: %s"}`, err)
+	}
+	return string(data)
+}
+
+func formatToolCallLogJSON(call tools.ToolCall) string {
+	data, err := json.Marshal(call)
+	if err != nil {
+		return fmt.Sprintf(`{"tool_name":%q,"error":"marshal tool call log: %s"}`, call.ToolName, err)
 	}
 	return string(data)
 }

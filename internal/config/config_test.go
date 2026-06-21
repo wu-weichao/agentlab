@@ -38,6 +38,9 @@ func TestLoadReadsPromptTemplateConfig(t *testing.T) {
 	if cfg.Tools.MaxSteps != DefaultToolMaxSteps {
 		t.Fatalf("expected default tools max steps %d, got %d", DefaultToolMaxSteps, cfg.Tools.MaxSteps)
 	}
+	if cfg.Tools.ToolCallingMode != "native" {
+		t.Fatalf("expected default native tool calling mode, got %q", cfg.Tools.ToolCallingMode)
+	}
 }
 
 func TestLoadReadsOptionalWebSearchConfig(t *testing.T) {
@@ -50,6 +53,7 @@ func TestLoadReadsOptionalWebSearchConfig(t *testing.T) {
 		"中文",
 	)+"tools:\n"+
 		"  max_steps: 5\n"+
+		"  tool_calling_mode: text_compat\n"+
 		"  web_search:\n"+
 		"    enabled: true\n"+
 		"    provider: custom\n"+
@@ -67,6 +71,18 @@ func TestLoadReadsOptionalWebSearchConfig(t *testing.T) {
 	}
 	if cfg.Tools.MaxSteps != 5 {
 		t.Fatalf("unexpected max steps: %d", cfg.Tools.MaxSteps)
+	}
+	if cfg.Tools.ToolCallingMode != "text_compat" {
+		t.Fatalf("unexpected tool calling mode: %q", cfg.Tools.ToolCallingMode)
+	}
+}
+
+func TestValidateRejectsInvalidToolCallingMode(t *testing.T) {
+	cfg := validConfig()
+	cfg.Tools.ToolCallingMode = "automatic"
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid tool calling mode")
 	}
 }
 
@@ -190,7 +206,8 @@ func validConfig() *Config {
 			},
 		},
 		Tools: ToolsConfig{
-			MaxSteps: DefaultToolMaxSteps,
+			MaxSteps:        DefaultToolMaxSteps,
+			ToolCallingMode: "native",
 		},
 	}
 }

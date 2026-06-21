@@ -1,7 +1,11 @@
-## ADDED Requirements
+## Purpose
+
+定义命令行聊天入口、持续输入循环、退出与历史管理命令、错误处理方式以及用户可见输出和本地日志之间的行为边界。
+
+## Requirements
 
 ### Requirement: Interactive CLI chat loop
-系统必须基于 `spf13/cobra` 提供命令行聊天入口，使用户可以持续输入文本并接收模型回复，直到显式退出。
+系统 MUST 基于 `spf13/cobra` 提供命令行聊天入口，使用户可以持续输入文本并接收模型回复，直到显式退出。
 
 #### Scenario: Start interactive session
 - **WHEN** 用户通过 Cobra 注册的聊天命令启动程序
@@ -19,7 +23,7 @@
 - **THEN** 系统必须将模型返回内容输出给用户
 
 ### Requirement: Built-in CLI commands
-系统必须在交互循环中支持基础命令，以便退出程序、清空上下文和查看当前历史消息。
+系统 MUST 在交互循环中支持基础命令，以便退出程序、清空上下文和查看当前历史消息。
 
 #### Scenario: Exit command
 - **WHEN** 用户输入 `exit` 或 `quit`
@@ -36,7 +40,7 @@
 - **THEN** 输出内容必须包含每条消息的角色和文本，并能区分 `summary` 与普通对话消息
 
 ### Requirement: CLI logs do not interrupt chat output
-系统必须将调试和请求日志写入本地日志文件，而不是直接混入命令行对话输出。
+系统 MUST 将调试和请求日志写入本地日志文件，而不是直接混入命令行对话输出。
 
 #### Scenario: Write logs to local file
 - **WHEN** 用户启动聊天命令

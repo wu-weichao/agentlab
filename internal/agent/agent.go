@@ -20,6 +20,7 @@ type Options struct {
 	ContextConfig   config.ContextConfig
 	Executor        *tools.Executor
 	ToolLoopOptions ToolLoopOptions
+	ToolCallingMode llm.ToolCallingMode
 }
 
 // Agent 负责把用户输入、会话上下文、模型调用和工具循环编排成一次完整运行。
@@ -31,6 +32,7 @@ type Agent struct {
 	contextCfg      config.ContextConfig
 	executor        *tools.Executor
 	toolLoopOptions ToolLoopOptions
+	toolCallingMode llm.ToolCallingMode
 }
 
 // New 创建一个可执行多轮对话的 Agent 实例。
@@ -39,7 +41,11 @@ func New(options Options) *Agent {
 	if options.Executor == nil {
 		options.Executor = tools.NewDefaultExecutorForCurrentWorkspace(nil)
 	}
-	options.Session.AppendSystemPromptSection(buildToolInstructions(options.Executor))
+	mode, err := llm.ParseToolCallingMode(string(options.ToolCallingMode))
+	if err != nil {
+		mode = llm.DefaultToolCallingMode
+	}
+	options.Session.AppendSystemPromptSection(buildToolInstructions(options.Executor, mode))
 	return &Agent{
 		client:          options.Client,
 		session:         options.Session,
@@ -48,6 +54,7 @@ func New(options Options) *Agent {
 		contextCfg:      options.ContextConfig,
 		executor:        options.Executor,
 		toolLoopOptions: normalizeToolLoopOptions(options.ToolLoopOptions),
+		toolCallingMode: mode,
 	}
 }
 

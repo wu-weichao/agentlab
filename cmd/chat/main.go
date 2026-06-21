@@ -62,7 +62,7 @@ func newChatCommand(configPath *string) *cobra.Command {
 				return err
 			}
 			log.Printf(
-				"[cli] 配置加载成功 provider=%s model=%s base_url=%s context_max_chars=%d keep_recent_turns=%d summary_max_chars=%d rolling_summary=%t tools_max_steps=%d",
+				"[cli] 配置加载成功 provider=%s model=%s base_url=%s context_max_chars=%d keep_recent_turns=%d summary_max_chars=%d rolling_summary=%t tools_max_steps=%d tool_calling_mode=%s",
 				cfg.LLM.Provider,
 				cfg.LLM.Model,
 				cfg.LLM.BaseURL,
@@ -71,6 +71,7 @@ func newChatCommand(configPath *string) *cobra.Command {
 				cfg.Chat.Context.SummaryMaxChars,
 				cfg.Chat.Context.EnableRollingSummary,
 				cfg.Tools.MaxSteps,
+				cfg.Tools.ToolCallingMode,
 			)
 			log.Printf("[cli] 开始渲染 prompt template variables=%d", len(cfg.Chat.Prompt.VariableMap()))
 
@@ -94,6 +95,7 @@ func newChatCommand(configPath *string) *cobra.Command {
 				ToolLoopOptions: app.ToolLoopOptions{
 					MaxSteps: cfg.Tools.MaxSteps,
 				},
+				ToolCallingMode: llm.ToolCallingMode(cfg.Tools.ToolCallingMode),
 			})
 
 			fmt.Println("AI Agent Lab ChatBot")

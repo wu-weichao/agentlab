@@ -1,7 +1,11 @@
-## ADDED Requirements
+## Purpose
+
+定义 Prompt 模板配置、标准变量路径、启动阶段完整性校验、确定性渲染、错误处理以及渲染结果用于会话初始化和重置的行为。
+
+## Requirements
 
 ### Requirement: Render system prompt from template
-系统必须支持通过 Prompt 模板和结构化变量在启动阶段生成最终的 system prompt。
+系统 MUST 支持通过 Prompt 模板和结构化变量在启动阶段生成最终的 system prompt。
 
 #### Scenario: Render prompt from structured variables
 - **WHEN** 配置文件提供 `chat.prompt.template`、`chat.prompt.role` 和 `chat.prompt.context`
@@ -9,7 +13,7 @@
 - **THEN** 生成结果必须可直接作为会话中的首条 `system` 消息
 
 ### Requirement: Validate prompt variables before session startup
-系统必须在进入交互式聊天循环前校验 Prompt 模板中引用的变量是否完整且非空。
+系统 MUST 在进入交互式聊天循环前校验 Prompt 模板中引用的变量是否完整且非空。
 
 #### Scenario: Reject missing template variable
 - **WHEN** 模板中引用了未在结构化配置中提供的变量
@@ -22,7 +26,7 @@
 - **THEN** 系统不得进入交互式聊天循环
 
 ### Requirement: Support standard prompt variable paths
-系统必须支持第二版定义的标准 Prompt 变量路径，并按点路径语义进行替换。
+系统 MUST 支持第二版定义的标准 Prompt 变量路径，并按点路径语义进行替换。
 
 #### Scenario: Replace standard variable paths
 - **WHEN** 模板中包含 `{{role.name}}`、`{{role.goal}}`、`{{role.style}}` 或 `{{context.language}}`

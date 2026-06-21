@@ -1,7 +1,9 @@
-## ADDED Requirements
+## Purpose
 
+定义工具注册与发现、结构化调用协议、原生和文本兼容模式、顺序多步工具循环、请求内结果缓存、安全执行边界以及完整学习诊断日志行为。
+## Requirements
 ### Requirement: Define a structured tool calling protocol
-系统必须使用统一结构表示工具调用和工具执行结果，使 Agent、工具执行器和模型回填流程之间的契约清晰可测试。
+系统 MUST 使用统一结构表示工具调用和工具执行结果，使 Agent、工具执行器和模型回填流程之间的契约清晰可测试。
 
 #### Scenario: Model requests a tool call
 - **WHEN** 模型判断需要调用工具
@@ -15,21 +17,26 @@
 - **THEN** 失败结果必须设置 `success=false` 并提供明确 `error`
 
 ### Requirement: Expose registered tools in system prompt
-系统必须在 ChatBot 启动阶段将已注册工具的模型可见说明合并进会话 system prompt。
+系统 MUST 根据工具调用模式向模型暴露已注册工具，并确保工具能力在会话 reset 后继续可用。
 
-#### Scenario: Build tool instructions at startup
-- **WHEN** ChatBot 使用工具执行器初始化
+#### Scenario: Build native tool behavior instructions at startup
+- **WHEN** Agent 使用 `native` 模式和工具执行器初始化
+- **THEN** system prompt MUST 包含顺序工具使用、避免重复调用和最终回答输出约束
+- **THEN** system prompt MUST NOT 包含要求模型输出工具 JSON 的格式说明
+- **THEN** 具体工具名称、描述和参数 MUST 通过每次模型请求的原生工具定义传递
+
+#### Scenario: Build text compatibility instructions at startup
+- **WHEN** Agent 使用 `text_compat` 模式和工具执行器初始化
 - **THEN** 系统必须基于已注册工具生成包含工具名称、描述、参数和调用 JSON 格式的工具说明
 - **THEN** 系统必须将该工具说明追加到会话 system prompt
-- **THEN** 系统不得在每次 `Send` 时重新生成并临时追加工具说明
 
-#### Scenario: Preserve tool instructions after clear
+#### Scenario: Preserve mode instructions after clear
 - **WHEN** 会话执行 `clear` 或 reset
 - **THEN** 系统必须清空摘要和近期消息
-- **THEN** system prompt 中的工具说明必须继续保留
+- **THEN** system prompt 中当前模式对应的工具行为说明必须继续保留
 
 ### Requirement: Register and execute tools through a ToolExecutor
-系统必须通过统一 ToolExecutor 注册、查找和执行工具，而不是在 ChatBot 主流程中硬编码具体工具实现。
+系统 MUST 通过统一 ToolExecutor 注册、查找和执行工具，而不是在 ChatBot 主流程中硬编码具体工具实现。
 
 #### Scenario: Register supported tools
 - **WHEN** ChatBot 初始化工具执行器
@@ -48,7 +55,7 @@
 - **THEN** 错误必须能够回填给 Agent 生成最终说明
 
 ### Requirement: Support calculator tool
-系统必须提供 `calculator` 工具执行安全的基础数学计算。
+系统 MUST 提供 `calculator` 工具执行安全的基础数学计算。
 
 #### Scenario: Evaluate a valid expression
 - **WHEN** Agent 调用 `calculator` 并传入合法基础数学表达式
@@ -61,7 +68,7 @@
 - **THEN** 系统不得执行任意代码
 
 ### Requirement: Support time tool
-系统必须提供 `time` 工具查询当前环境时间。
+系统 MUST 提供 `time` 工具查询当前环境时间。
 
 #### Scenario: Return current local time
 - **WHEN** Agent 调用 `time`
@@ -69,7 +76,7 @@
 - **THEN** 返回内容必须使用稳定格式，便于 Agent 引用
 
 ### Requirement: Support file_read tool with workspace boundary
-系统必须提供 `file_read` 工具读取工作区内允许范围的文本文件。
+系统 MUST 提供 `file_read` 工具读取工作区内允许范围的文本文件。
 
 #### Scenario: Read allowed text file
 - **WHEN** Agent 调用 `file_read` 并传入工作区内允许的文本文件路径
@@ -87,7 +94,7 @@
 - **THEN** 系统不得把超大或二进制内容注入模型上下文
 
 ### Requirement: Support web_search tool with source-aware results
-系统必须提供 `web_search` 工具获取外部搜索结果，并以结构化方式回填给 Agent。
+系统 MUST 提供 `web_search` 工具获取外部搜索结果，并以结构化方式回填给 Agent。
 
 #### Scenario: Return bounded search results
 - **WHEN** Agent 调用 `web_search` 并传入查询词
@@ -105,36 +112,36 @@
 - **THEN** 系统不得把搜索摘要直接视为未经验证的绝对事实
 
 ### Requirement: Complete one tool call loop per user turn
-系统 MUST 支持单轮对话中的受控顺序多步工具调用闭环，并明确避免执行无限递归、并行工具调用或一次响应中的多个工具调用。
+系统 MUST 支持单轮对话中的受控顺序多步工具调用闭环，并根据当前模式使用原生工具消息或文本兼容消息回填结果。
 
-#### Scenario: Complete one tool call successfully
-- **WHEN** 模型第一阶段响应为合法 `tool_call`
-- **THEN** ChatBot 必须执行该工具
-- **THEN** ChatBot 必须将 `tool_result` 回填到本轮工作消息
-- **THEN** 如果下一次模型响应为普通文本，ChatBot 必须将其保存为最终 assistant 回答
-- **THEN** 成功后会话历史必须包含用户输入和最终 assistant 回答
+#### Scenario: Complete one native tool call successfully
+- **WHEN** native 模式下模型响应包含一个合法结构化工具调用
+- **THEN** Agent 必须执行该工具
+- **THEN** Agent 必须保留 assistant tool call 并追加关联 tool call ID 的 tool result 消息
+- **THEN** 如果下一次模型响应为普通文本，Agent 必须将其保存为最终 assistant 回答
+- **THEN** 成功后会话历史必须只包含用户输入和最终 assistant 回答，不包含内部工具轨迹
 
-#### Scenario: Complete sequential tool calls successfully
-- **WHEN** 模型在同一次用户请求内先后返回多个顺序 `tool_call`
-- **THEN** ChatBot 必须按步骤逐个执行工具
+#### Scenario: Complete sequential native tool calls successfully
+- **WHEN** 模型在同一次用户请求内先后返回多个顺序的单个原生工具调用
+- **THEN** Agent 必须按步骤逐个执行工具
 - **THEN** 每一步最多执行一个工具调用
-- **THEN** ChatBot 必须把每次 `tool_result` 追加到本轮工作消息后继续下一步
-- **THEN** 当模型返回普通文本时，ChatBot 必须保存该文本作为最终 assistant 回答
+- **THEN** Agent 必须把每次原生 tool result 追加到本轮工作消息后继续下一步
+- **THEN** 当模型返回普通文本时 Agent 必须保存该文本作为最终 assistant 回答
 
 #### Scenario: Tool execution fails safely
 - **WHEN** 工具执行返回失败结果
-- **THEN** ChatBot 必须将失败结果作为受控上下文交给模型生成说明或下一步决策
+- **THEN** Agent 必须将失败结果通过当前模式对应的受控工具反馈交给模型
 - **THEN** 系统不得中断进程或追加伪造的工具成功结果
 
 #### Scenario: Continue after tool result when another tool is needed
 - **WHEN** 工具结果回填后的下一次模型响应仍请求一个合法工具调用
 - **THEN** 系统必须在未超过 `MaxSteps` 时继续执行该工具调用
-- **THEN** 系统必须继续使用同一次请求内的 run cache
+- **THEN** 系统必须继续使用同一次请求内的 runCache
 
-#### Scenario: Parallel tool calls are unsupported
-- **WHEN** 模型一次响应中请求多个工具调用
+#### Scenario: Multiple native tool calls are unsupported
+- **WHEN** native 模式下模型一次响应中请求多个工具调用
 - **THEN** 系统必须返回明确的不支持错误
-- **THEN** 系统不得并行或顺序执行多个工具调用
+- **THEN** 系统不得执行其中任何工具
 
 ### Requirement: Configure bounded tool loop execution
 系统 MUST 为同一次用户请求内的工具循环提供 `ToolLoopOptions{MaxSteps int}`，并使用配置化最大步数防止无限工具调用。
@@ -307,23 +314,22 @@
 - **THEN** 后续新的用户请求 MUST 不依赖上一轮请求的 run-level 缓存结果
 
 ### Requirement: Preserve current tool calling boundaries
-系统 MUST 在引入 runCache 基础设施时保持当前 Tool Calling 能力边界不变。
+系统 MUST 在引入 provider 原生 Tool Calling 时保持现有工具集合、执行边界、缓存生命周期和文本兼容能力。
 
-#### Scenario: Existing single tool call loop remains compatible
-- **WHEN** 模型第一阶段响应为合法单个 `tool_call`
-- **THEN** ChatBot MUST 继续执行该工具并回填 `tool_result`
-- **THEN** ChatBot MUST 继续基于最终模型响应保存 assistant 回答
+#### Scenario: Existing text tool call loop remains available
+- **WHEN** 系统配置为 `text_compat` 且模型返回合法单个文本 `tool_call`
+- **THEN** Agent MUST 继续执行该工具并回填文本协议 `tool_result`
+- **THEN** Agent MUST 继续基于最终模型响应保存 assistant 回答
 
-#### Scenario: Tool result is returned as final-answer input
-- **WHEN** ChatBot 已执行第一阶段模型请求中的合法单个 `tool_call`
-- **THEN** ChatBot MUST 在第二次模型请求中保留一条表示工具请求意图的 assistant 消息
-- **THEN** ChatBot MUST 使用 user 消息回填工具执行结果和 `FINAL_ANSWER` 阶段约束
-- **THEN** 该回填消息 MUST 明确禁止再次请求工具调用或输出 `tool_call` JSON
+#### Scenario: Native tool result is returned with call correlation
+- **WHEN** Agent 已执行 native 模式中的合法工具调用
+- **THEN** 下一次模型请求 MUST 包含原 assistant tool call
+- **THEN** 下一次模型请求 MUST 包含使用相同 tool call ID 的 tool result 消息
 
 #### Scenario: No cross-turn cache is introduced
 - **WHEN** 用户在后续对话轮次中再次请求相同工具和相同参数
-- **THEN** 系统 MUST 不因本变更复用上一轮请求的工具结果
-- **THEN** 是否执行工具 MUST 继续遵循当前工具调用闭环行为
+- **THEN** 系统 MUST 不复用上一轮请求的工具结果
+- **THEN** 是否执行工具 MUST 继续遵循当前工具调用循环行为
 
 #### Scenario: Tool interface remains unchanged
 - **WHEN** 本变更完成
@@ -331,17 +337,57 @@
 - **THEN** 系统 MUST 不要求工具实现 TTL、`ToolMetadata` 或跨轮缓存策略
 
 ### Requirement: Provide full diagnostic logs for tool loop debugging
-系统 MUST 在本地日志中提供足够诊断信息，用于确认工具循环步骤、工具结果和 LLM 请求上下文是否按预期传递，同时避免新增工具循环日志暴露完整敏感内容。
+系统 MUST 在本地学习日志中记录足够且完整的诊断信息，用于确认工具调用参数、工具执行结果和 LLM 请求上下文是否按预期传递。
 
-#### Scenario: Tool execution log includes bounded ToolResult diagnostics
-- **WHEN** ChatBot 完成一次工具执行
+#### Scenario: Tool execution log includes complete ToolResult
+- **WHEN** Agent 完成一次工具执行
 - **THEN** 日志 MUST 包含工具名、执行成功状态和错误文本
-- **THEN** 日志 MUST 包含脱敏后的单行 `tool_result_json`
-- **THEN** `tool_result_json` MUST 包含 `success`、`error`、`metadata` 和 `content_chars`
-- **THEN** 日志 MUST NOT 包含完整文件内容、搜索结果全文或完整工具参数
+- **THEN** 日志 MUST 包含完整单行 `tool_result_json`
+- **THEN** `tool_result_json` MUST 包含完整 `success`、`content`、`error` 和 `metadata`
 
-#### Scenario: LLM request log includes full request body
-- **WHEN** OpenAI 兼容客户端发送聊天补全请求
-- **THEN** 日志 MUST 包含 provider、model、url 和消息数量
-- **THEN** 日志 MUST 包含实际发送的完整 JSON request body
-- **THEN** 日志 MUST NOT 输出 Authorization header
+#### Scenario: Tool call log includes complete arguments
+- **WHEN** Agent 识别到合法工具调用
+- **THEN** 日志 MUST 包含完整单行 `tool_call_json`
+- **THEN** `tool_call_json` MUST 包含调用 ID、工具名称、完整 arguments 和 reason
+
+#### Scenario: LLM request and response logs include full bodies
+- **WHEN** OpenAI 兼容客户端发送聊天补全请求并收到响应
+- **THEN** 请求日志 MUST 包含实际发送的完整 JSON `request_body`
+- **THEN** 响应日志 MUST 包含 provider 返回的完整 `response_body`
+- **THEN** 日志 MUST NOT 输出 Authorization header 或 API Key
+
+### Requirement: Support provider-native tool calling
+系统 MUST 在 `native` 模式下使用 provider 原生工具定义、结构化工具调用和工具结果消息完成 Tool Calling，同时保持仓库内部统一工具协议。
+
+#### Scenario: Expose registered tools through native definitions
+- **WHEN** Agent 在 `native` 模式下调用模型
+- **THEN** 请求 MUST 包含当前 Executor 已注册工具的名称、描述和参数 schema
+- **THEN** system prompt MUST NOT 要求模型输出 JSON 文本工具调用
+
+#### Scenario: Convert provider call to unified ToolCall
+- **WHEN** provider 返回一个合法原生工具调用
+- **THEN** 系统 MUST 将调用 ID、工具名称和参数转换为统一 `ToolCall`
+- **THEN** ToolExecutor MUST 继续通过统一 `ToolCall` 执行工具
+
+#### Scenario: Keep tool call ID out of cache key
+- **WHEN** 两个原生工具调用的 ID 不同但工具名和标准化参数相同
+- **THEN** 系统 MUST 为它们生成相同 `ToolCallKey`
+- **THEN** 同一次 Run 中第二个调用 MUST 能够复用 runCache
+
+### Requirement: Preserve text tool calling compatibility
+系统 MUST 提供显式 `text_compat` 模式，保留现有 JSON 文本工具调用能力。
+
+#### Scenario: Parse text compatibility tool call
+- **WHEN** 系统处于 `text_compat` 模式且模型在 assistant content 中返回合法 JSON 工具调用
+- **THEN** Agent MUST 使用现有文本解析逻辑识别并执行该调用
+
+#### Scenario: Use text compatibility feedback
+- **WHEN** `text_compat` 模式完成一次工具执行
+- **THEN** Agent MUST 使用现有 assistant 意图消息和 user 工具结果消息回填下一次请求
+- **THEN** 工具轨迹 MUST NOT 写入 Session
+
+#### Scenario: Do not silently fall back
+- **WHEN** `native` 模式请求失败或 provider 返回非法原生工具调用
+- **THEN** 系统 MUST 返回明确错误
+- **THEN** 系统 MUST NOT 自动重试为 `text_compat`
+

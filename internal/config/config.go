@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"agentlab/internal/llm"
 	"agentlab/internal/prompt"
 
 	"gopkg.in/yaml.v3"
@@ -67,8 +68,9 @@ type ContextConfig struct {
 
 // ToolsConfig 描述可选工具配置。首版 web_search 未配置时仍允许启动。
 type ToolsConfig struct {
-	MaxSteps  int             `yaml:"max_steps"`
-	WebSearch WebSearchConfig `yaml:"web_search"`
+	MaxSteps        int             `yaml:"max_steps"`
+	ToolCallingMode string          `yaml:"tool_calling_mode"`
+	WebSearch       WebSearchConfig `yaml:"web_search"`
 }
 
 // WebSearchConfig 为后续真实搜索客户端预留最小配置入口。
@@ -95,6 +97,9 @@ func Load(path string) (*Config, error) {
 	}
 	if !hasToolsMaxSteps(data) {
 		cfg.Tools.MaxSteps = DefaultToolMaxSteps
+	}
+	if strings.TrimSpace(cfg.Tools.ToolCallingMode) == "" {
+		cfg.Tools.ToolCallingMode = string(llm.DefaultToolCallingMode)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -140,6 +145,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Tools.MaxSteps > MaxToolMaxSteps {
 		return errors.New("tools.max_steps must be between 1 and 10")
+	}
+	if _, err := llm.ParseToolCallingMode(c.Tools.ToolCallingMode); err != nil {
+		return err
 	}
 
 	requiredVariables := map[string]string{

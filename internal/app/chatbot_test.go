@@ -69,6 +69,7 @@ func TestChatBotOptionsMapConfiguredMaxSteps(t *testing.T) {
 		ToolLoopOptions: ToolLoopOptions{
 			MaxSteps: 1,
 		},
+		ToolCallingMode: llm.ToolCallingModeTextCompat,
 	})
 
 	_, err := bot.Send(context.Background(), "call tool")
@@ -82,7 +83,7 @@ type stubClient struct {
 	err     error
 }
 
-func (c *stubClient) Chat(_ context.Context, _ []llm.Message) (*llm.ChatResponse, error) {
+func (c *stubClient) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
 	if c.err != nil {
 		return nil, c.err
 	}

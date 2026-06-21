@@ -617,6 +617,7 @@ func TestChatBotSendUsesConfiguredMaxSteps(t *testing.T) {
 		ToolLoopOptions: ToolLoopOptions{
 			MaxSteps: 1,
 		},
+		ToolCallingMode: llm.ToolCallingModeTextCompat,
 	})
 
 	_, err := bot.Send(context.Background(), "只允许一步")
@@ -653,7 +654,7 @@ func TestChatBotSendAddsDiagnosticsToFailedToolResult(t *testing.T) {
 	}
 }
 
-func TestChatBotToolLoopStepLogAvoidsFullToolResultContent(t *testing.T) {
+func TestChatBotToolLoopLogsFullToolCallAndResult(t *testing.T) {
 	var buf bytes.Buffer
 	previousWriter := log.Writer()
 	previousFlags := log.Flags()
@@ -693,8 +694,9 @@ func TestChatBotToolLoopStepLogAvoidsFullToolResultContent(t *testing.T) {
 		"success=true",
 		"error_code=",
 		"tool_result_json=",
-		`"content":""`,
-		`"content_chars":22`,
+		"tool_call_json=",
+		`"arguments":{"path":"secret.txt"}`,
+		`"content":"sensitive file content"`,
 		`"cache_hit":false`,
 		`"step":1`,
 		`"tool_call_key":"content:`,
@@ -703,8 +705,8 @@ func TestChatBotToolLoopStepLogAvoidsFullToolResultContent(t *testing.T) {
 			t.Fatalf("expected log to contain %q, got %q", want, logText)
 		}
 	}
-	if strings.Contains(logText, "sensitive file content") || strings.Contains(logText, "secret.txt") {
-		t.Fatalf("step log should not include full content or arguments, got %q", logText)
+	if !strings.Contains(logText, "sensitive file content") || !strings.Contains(logText, "secret.txt") {
+		t.Fatalf("learning logs should include full tool arguments and result, got %q", logText)
 	}
 }
 
@@ -736,13 +738,193 @@ func TestChatBotSendRejectsMultipleToolCallsWithoutExecuting(t *testing.T) {
 }
 
 type scriptedChatResponse struct {
-	content string
-	err     error
+	content   string
+	toolCalls []tools.ToolCall
+	err       error
+}
+
+func TestAgentNativeToolCallUsesNativeMessagesAndTools(t *testing.T) {
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	if err := executor.Register(tools.NewCalculatorTool()); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{
+			{toolCalls: []tools.ToolCall{{
+				ID:        "call-1",
+				ToolName:  "calculator",
+				Arguments: map[string]any{"expression": "1 + 2"},
+			}}},
+			{content: "计算结果是 3。"},
+		},
+	}
+	runtime := New(Options{
+		Client:          client,
+		Session:         sess,
+		ContextConfig:   testContextConfig(),
+		Executor:        executor,
+		ToolCallingMode: llm.ToolCallingModeNative,
+	})
+
+	reply, err := runtime.Run(context.Background(), "计算")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if reply != "计算结果是 3。" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(client.requests) != 2 || len(client.requests[0].Tools) != 1 {
+		t.Fatalf("expected native tools on requests, got %#v", client.requests)
+	}
+	if strings.Contains(client.requests[0].Messages[0].Content, `"tool_name"`) {
+		t.Fatalf("native prompt should not require JSON tool calls: %q", client.requests[0].Messages[0].Content)
+	}
+	secondMessages := client.requests[1].Messages
+	if secondMessages[len(secondMessages)-2].Role != llm.RoleAssistant ||
+		len(secondMessages[len(secondMessages)-2].ToolCalls) != 1 ||
+		secondMessages[len(secondMessages)-1].Role != llm.RoleTool ||
+		secondMessages[len(secondMessages)-1].ToolCallID != "call-1" {
+		t.Fatalf("unexpected native tool feedback: %#v", secondMessages)
+	}
+	if len(sess.History()) != 3 {
+		t.Fatalf("native tool trace must not enter session history: %#v", sess.History())
+	}
+}
+
+func TestAgentNativeRunCacheIgnoresToolCallID(t *testing.T) {
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	tool := &countingTool{}
+	if err := executor.Register(tool); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{
+			{toolCalls: []tools.ToolCall{{ID: "call-1", ToolName: "counting", Arguments: map[string]any{"a": 1}}}},
+			{toolCalls: []tools.ToolCall{{ID: "call-2", ToolName: "counting", Arguments: map[string]any{"a": 1.0}}}},
+			{content: "done"},
+		},
+	}
+	runtime := New(Options{
+		Client:          client,
+		Session:         sess,
+		ContextConfig:   testContextConfig(),
+		Executor:        executor,
+		ToolCallingMode: llm.ToolCallingModeNative,
+	})
+
+	if _, err := runtime.Run(context.Background(), "run"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if tool.calls != 1 {
+		t.Fatalf("expected one real execution, got %d", tool.calls)
+	}
+	feedback := client.requests[2].Messages
+	last := feedback[len(feedback)-1]
+	if last.ToolCallID != "call-2" || !strings.Contains(last.Content, `"cache_hit": true`) {
+		t.Fatalf("expected cached result correlated to current call id, got %#v", last)
+	}
+}
+
+func TestAgentNativeRejectsMultipleToolCallsWithoutExecuting(t *testing.T) {
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	tool := &countingTool{}
+	if err := executor.Register(tool); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{{toolCalls: []tools.ToolCall{
+			{ID: "call-1", ToolName: "counting", Arguments: map[string]any{"a": 1}},
+			{ID: "call-2", ToolName: "counting", Arguments: map[string]any{"a": 2}},
+		}}},
+	}
+	runtime := New(Options{
+		Client:          client,
+		Session:         sess,
+		ContextConfig:   testContextConfig(),
+		Executor:        executor,
+		ToolCallingMode: llm.ToolCallingModeNative,
+	})
+
+	_, err := runtime.Run(context.Background(), "run")
+	if !errors.Is(err, tools.ErrMultipleToolCalls) {
+		t.Fatalf("expected ErrMultipleToolCalls, got %v", err)
+	}
+	if tool.calls != 0 {
+		t.Fatalf("expected no tool execution, got %d", tool.calls)
+	}
+}
+
+func TestAgentNativeRespectsMaxSteps(t *testing.T) {
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	tool := &countingTool{}
+	if err := executor.Register(tool); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{
+			{toolCalls: []tools.ToolCall{{ID: "call-1", ToolName: "counting", Arguments: map[string]any{"step": 1}}}},
+		},
+	}
+	runtime := New(Options{
+		Client:        client,
+		Session:       sess,
+		ContextConfig: testContextConfig(),
+		Executor:      executor,
+		ToolLoopOptions: ToolLoopOptions{
+			MaxSteps: 1,
+		},
+		ToolCallingMode: llm.ToolCallingModeNative,
+	})
+
+	_, err := runtime.Run(context.Background(), "run")
+	if !errors.Is(err, ErrToolLoopExceeded) {
+		t.Fatalf("expected ErrToolLoopExceeded, got %v", err)
+	}
+	if tool.calls != 1 {
+		t.Fatalf("expected one tool execution, got %d", tool.calls)
+	}
+	if len(sess.History()) != 2 {
+		t.Fatalf("failed native run must not append assistant: %#v", sess.History())
+	}
+}
+
+func TestAgentNativeToolFailureIsReturnedAsToolMessage(t *testing.T) {
+	sess := session.New("system prompt")
+	executor := tools.NewExecutor()
+	if err := executor.Register(&failingTool{}); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+	client := &scriptedChatClient{
+		responses: []scriptedChatResponse{
+			{toolCalls: []tools.ToolCall{{ID: "call-fail", ToolName: "failing", Arguments: map[string]any{}}}},
+			{content: "失败已说明"},
+		},
+	}
+	runtime := New(Options{
+		Client:          client,
+		Session:         sess,
+		ContextConfig:   testContextConfig(),
+		Executor:        executor,
+		ToolCallingMode: llm.ToolCallingModeNative,
+	})
+
+	if _, err := runtime.Run(context.Background(), "run"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	last := client.requests[1].Messages[len(client.requests[1].Messages)-1]
+	if last.Role != llm.RoleTool || last.ToolCallID != "call-fail" || !strings.Contains(last.Content, "planned failure") {
+		t.Fatalf("unexpected failed native feedback: %#v", last)
+	}
 }
 
 type scriptedChatClient struct {
 	responses  []scriptedChatResponse
 	calls      [][]llm.Message
+	requests   []llm.ChatRequest
 	requestIDs []string
 }
 
@@ -839,8 +1021,9 @@ func (c scriptedSearchClient) Search(_ context.Context, _ string, _ int) ([]tool
 	return c.results, nil
 }
 
-func (c *scriptedChatClient) Chat(ctx context.Context, messages []llm.Message) (*llm.ChatResponse, error) {
-	c.calls = append(c.calls, append([]llm.Message(nil), messages...))
+func (c *scriptedChatClient) Chat(ctx context.Context, request llm.ChatRequest) (*llm.ChatResponse, error) {
+	c.calls = append(c.calls, append([]llm.Message(nil), request.Messages...))
+	c.requests = append(c.requests, request)
 	c.requestIDs = append(c.requestIDs, requestctx.FromContext(ctx))
 	if len(c.responses) == 0 {
 		return nil, errors.New("no scripted response")
@@ -851,15 +1034,16 @@ func (c *scriptedChatClient) Chat(ctx context.Context, messages []llm.Message) (
 	if next.err != nil {
 		return nil, next.err
 	}
-	return &llm.ChatResponse{Content: next.content}, nil
+	return &llm.ChatResponse{Content: next.content, ToolCalls: next.toolCalls}, nil
 }
 
 func newTestChatBot(client llm.Client, sess *session.Session, executor *tools.Executor) *ChatBot {
 	return NewChatBot(ChatBotOptions{
-		Client:        client,
-		Session:       sess,
-		ContextConfig: testContextConfig(),
-		Executor:      executor,
+		Client:          client,
+		Session:         sess,
+		ContextConfig:   testContextConfig(),
+		Executor:        executor,
+		ToolCallingMode: llm.ToolCallingModeTextCompat,
 	})
 }
 

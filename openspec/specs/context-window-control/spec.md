@@ -1,7 +1,11 @@
-## ADDED Requirements
+## Purpose
+
+定义模型调用前的对话上下文预算计算、完整轮次裁剪、近期消息保留、滚动摘要更新、摘要再压缩和超预算失败行为。
+
+## Requirements
 
 ### Requirement: Build bounded context before each model request
-系统必须在每次调用模型前，根据上下文预算构建受控消息列表，而不是无界传递全部会话历史。
+系统 MUST 在每次调用模型前，根据上下文预算构建受控消息列表，而不是无界传递全部会话历史。
 
 #### Scenario: Request stays within budget
 - **WHEN** 当前 system prompt、滚动摘要、近期消息和本轮用户输入的总长度未超过配置预算
@@ -14,7 +18,7 @@
 - **THEN** 系统必须进入旧消息整轮裁剪流程以缩减上下文
 
 ### Requirement: Evict old history by complete turns
-系统必须按完整对话轮次裁剪旧历史，并尽量保留最近若干轮原始 `user/assistant` 对话。
+系统 MUST 按完整对话轮次裁剪旧历史，并尽量保留最近若干轮原始 `user/assistant` 对话。
 
 #### Scenario: Preserve recent turns
 - **WHEN** 系统因预算超限开始裁剪历史
@@ -32,7 +36,7 @@
 - **THEN** 被移出的轮次必须作为后续滚动摘要更新的输入
 
 ### Requirement: Maintain a single rolling summary for evicted history
-系统必须仅维护一份滚动摘要，用于承载已经离开近期原文窗口的旧历史事实、约束、决策和未决问题。
+系统 MUST 仅维护一份滚动摘要，用于承载已经离开近期原文窗口的旧历史事实、约束、决策和未决问题。
 
 #### Scenario: Create or update summary after eviction
 - **WHEN** 旧原始消息因预算问题被移出近期窗口且启用了滚动摘要
@@ -50,7 +54,7 @@
 - **THEN** 若重试成功，系统必须使用压缩后的摘要继续本轮请求
 
 ### Requirement: Fail safely when minimum context still cannot fit
-系统必须在最小必保留上下文仍超出预算时返回明确错误，而不是发送不可控请求或破坏会话状态。
+系统 MUST 在最小必保留上下文仍超出预算时返回明确错误，而不是发送不可控请求或破坏会话状态。
 
 #### Scenario: Minimum retained context still exceeds budget
 - **WHEN** system prompt、当前用户输入、单份滚动摘要和最小近期轮次已经是最小集合但仍超出预算
@@ -58,7 +62,7 @@
 - **THEN** 系统不得为该轮失败请求追加 assistant 消息
 
 ### Requirement: Record context control diagnostics
-系统必须记录上下文预算命中、裁剪和摘要更新的关键诊断信息，便于本地观察运行时行为。
+系统 MUST 记录上下文预算命中、裁剪和摘要更新的关键诊断信息，便于本地观察运行时行为。
 
 #### Scenario: Log context management summary
 - **WHEN** 系统在一次对话请求前完成上下文构建

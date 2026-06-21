@@ -17,6 +17,7 @@ type ChatBotOptions struct {
 	ContextConfig   config.ContextConfig
 	Executor        *tools.Executor
 	ToolLoopOptions ToolLoopOptions
+	ToolCallingMode llm.ToolCallingMode
 }
 
 // ChatBot 是 CLI/app 层兼容适配器，Runtime 行为由 Agent 负责。
@@ -33,6 +34,7 @@ func NewChatBot(options ChatBotOptions) *ChatBot {
 			ContextConfig:   options.ContextConfig,
 			Executor:        options.Executor,
 			ToolLoopOptions: options.ToolLoopOptions,
+			ToolCallingMode: options.ToolCallingMode,
 		}),
 	}
 }

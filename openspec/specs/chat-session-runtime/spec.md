@@ -1,7 +1,11 @@
-## ADDED Requirements
+## Purpose
+
+定义聊天会话的消息状态、历史管理、清空操作、滚动摘要表达以及 Runtime 在多轮对话中的一致交互行为和状态边界。
+
+## Requirements
 
 ### Requirement: Structured chat messages
-系统必须使用统一消息结构表示对话上下文，至少支持 `system`、`user`、`assistant` 和内部 `summary` 四种角色。
+系统 MUST 使用统一消息结构表示对话上下文，至少支持 `system`、`user`、`assistant` 和内部 `summary` 四种角色。
 
 #### Scenario: Initialize session with rendered system prompt
 - **WHEN** 系统使用渲染后的 system prompt 创建新会话
@@ -19,7 +23,7 @@
 - **THEN** 会话不得同时保存多份滚动摘要
 
 ### Requirement: ChatBot orchestrates a single turn
-系统必须通过聊天运行时编排单轮请求，在模型调用前执行上下文预算构建和必要的摘要更新，同时保持会话管理、模型调用和工具执行职责分离。
+系统 MUST 通过聊天运行时编排单轮请求，在模型调用前执行上下文预算构建和必要的摘要更新，同时保持会话管理、模型调用和工具执行职责分离。
 
 #### Scenario: Successful turn execution
 - **WHEN** ChatBot 接收到一条用户输入且模型调用成功
@@ -71,7 +75,7 @@
 - **THEN** 成功后会话历史必须保存用户输入和兜底 assistant 回答
 
 ### Requirement: Reset session with the same rendered prompt
-系统必须在清空会话历史时恢复到本次启动阶段生成并追加全局能力说明后的同一个 system prompt，并同时清空滚动摘要和近期原始消息。
+系统 MUST 在清空会话历史时恢复到本次启动阶段生成并追加全局能力说明后的同一个 system prompt，并同时清空滚动摘要和近期原始消息。
 
 #### Scenario: Clear command restores rendered prompt
 - **WHEN** 用户执行清空会话历史操作
@@ -79,7 +83,7 @@
 - **THEN** 系统必须保留一条内容等于本次启动已渲染 prompt 加全局能力说明的 `system` 消息作为新会话起点
 
 ### Requirement: Expose summary-aware session history
-系统必须能够以稳定顺序暴露当前会话历史，使调用方可以区分滚动摘要与近期原始消息。
+系统 MUST 能够以稳定顺序暴露当前会话历史，使调用方可以区分滚动摘要与近期原始消息。
 
 #### Scenario: Read history with summary and recent messages
 - **WHEN** 调用方请求读取当前会话历史

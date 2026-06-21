@@ -55,6 +55,28 @@ func TestBuildToolCallKeyIncludesToolName(t *testing.T) {
 	}
 }
 
+func TestBuildToolCallKeyIgnoresProviderCallID(t *testing.T) {
+	first, err := BuildToolCallKey(ToolCall{
+		ID:        "call-1",
+		ToolName:  "calculator",
+		Arguments: map[string]any{"expression": "1+1"},
+	})
+	if err != nil {
+		t.Fatalf("BuildToolCallKey returned error: %v", err)
+	}
+	second, err := BuildToolCallKey(ToolCall{
+		ID:        "call-2",
+		ToolName:  "calculator",
+		Arguments: map[string]any{"expression": "1+1"},
+	})
+	if err != nil {
+		t.Fatalf("BuildToolCallKey returned error: %v", err)
+	}
+	if first != second {
+		t.Fatalf("provider call id must not affect cache key: %#v != %#v", first, second)
+	}
+}
+
 func TestNormalizeArgumentsHandlesEmptyAndNestedValues(t *testing.T) {
 	empty, err := NormalizeArguments(nil)
 	if err != nil {

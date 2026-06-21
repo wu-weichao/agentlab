@@ -26,6 +26,7 @@ chat:
 
 tools:
   max_steps: 3
+  tool_calling_mode: native
   web_search:
     enabled: false
     provider: ""

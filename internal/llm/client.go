@@ -3,5 +3,5 @@ package llm
 import "context"
 
 type Client interface {
-	Chat(ctx context.Context, messages []Message) (*ChatResponse, error)
+	Chat(ctx context.Context, request ChatRequest) (*ChatResponse, error)
 }

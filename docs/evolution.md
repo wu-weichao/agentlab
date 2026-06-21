@@ -370,3 +370,54 @@ runCache 执行思路：
 - 在 Agent Runtime 边界上设计跨轮 ToolCache 的生命周期、TTL 和副作用工具策略
 - 当出现第二种上下文或工具循环实现时，再评估是否提炼窄接口
 - 继续设计高风险工具授权、Memory 和 Workflow 能力
+
+## v0.0.9 native-tool-calling
+
+目标：将依赖 Prompt 的 JSON 文本工具协议升级为 provider 原生 Tool Calling，同时保留显式文本兼容模式，并保持现有 Agent Runtime、顺序工具循环和请求内去重语义稳定。
+
+新增：
+
+- `llm.ChatRequest`，统一承载消息、工具定义和工具调用模式。
+- `llm.Message` 支持 assistant tool calls、tool role、tool call ID 和工具名称。
+- `llm.ChatResponse` 支持结构化 `ToolCalls`。
+- `tools.tool_calling_mode` 配置，支持默认 `native` 和显式 `text_compat`。
+- OpenAI 兼容客户端将 `ToolSpec` 转换为原生 function tools 和 JSON Schema。
+- OpenAI 兼容客户端解析原生 tool call ID、工具名和 arguments object。
+- Agent native 工具循环使用 assistant tool call 与 tool result 消息关联后续请求。
+- native 模式和 text compatibility 模式的单元测试与集成测试。
+
+实现思路：
+
+- Provider 私有 `tools`、`tool_calls` 和 function arguments 结构只存在于 `internal/llm`。
+- Agent 和 ToolExecutor 继续使用统一 `tools.ToolCall`，其中可选 ID 只用于消息关联。
+- `ToolCallKey` 继续只使用工具名和标准化参数，provider call ID 不影响 runCache。
+- native 模式通过每次 `ChatRequest.Tools` 传递工具定义，system prompt 只保留顺序调用、避免重复和最终回答约束。
+- text compatibility 模式继续使用现有 JSON 文本说明、`ParseToolCall` 和 user 工具反馈。
+- 两种模式共用 `MaxSteps`、工具执行、失败反馈、runCache 和最终回答写回逻辑。
+- native 模式错误不会自动降级到 text compatibility，避免隐式增加请求或隐藏 provider 兼容问题。
+
+可观测性：
+
+- LLM 请求日志包含 `tool_calling_mode`、`tools_count` 和消息数量。
+- LLM 响应日志包含 `tool_calls_count` 和 `tool_calls_parse_status`。
+- Agent 工具识别日志包含当前工具调用模式，并继续保留 request ID、step、tool call key 和 cache hit。
+- OpenAI 客户端记录实际发送的完整 `request_body` 和 provider 返回的完整 `response_body`。
+- `检测到工具调用` 日志记录完整 `tool_call_json`，包括调用 ID、工具名和参数。
+- `工具执行完成` 日志记录完整 `tool_result_json`，包括 content、error 和 metadata。
+- Authorization header 和 API Key 不写入日志。
+- 完整日志用于本地学习和协议排查，可能包含用户输入、文件内容或搜索结果；生产化前需要增加日志开关、脱敏和截断策略。
+
+当前边界：
+
+- 每次模型响应仍最多接受一个工具调用。
+- 不支持并行工具调用或一次响应中的批量工具执行。
+- 不新增工具，不修改 `Tool` 接口。
+- 不引入跨轮 ToolCache、TTL 或工具副作用元信息。
+- 不实现 Planner、Workflow、Memory、RAG 或 Multi-Agent。
+- 不自动探测 OpenAI-compatible provider 是否支持原生 Tool Calling。
+
+下一步：
+
+- 引入结构化 `RunResult` 和 `RunStep`，让调用方无需解析日志即可获得本轮执行轨迹。
+- 统一模型调用、工具调用、缓存复用、耗时和错误分类。
+- 在结构化运行轨迹稳定后设计工具风险等级、授权回调和高风险工具安全策略。

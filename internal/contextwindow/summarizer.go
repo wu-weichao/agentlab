@@ -118,15 +118,18 @@ func (s *Summarizer) Compress(ctx context.Context, summary string, maxChars int)
 }
 
 func (s *Summarizer) generate(ctx context.Context, systemInstruction string, userInput string) (string, error) {
-	resp, err := s.client.Chat(ctx, []llm.Message{
-		{
-			Role:    llm.RoleSystem,
-			Content: systemInstruction,
+	resp, err := s.client.Chat(ctx, llm.ChatRequest{
+		Messages: []llm.Message{
+			{
+				Role:    llm.RoleSystem,
+				Content: systemInstruction,
+			},
+			{
+				Role:    llm.RoleUser,
+				Content: userInput,
+			},
 		},
-		{
-			Role:    llm.RoleUser,
-			Content: userInput,
-		},
+		ToolCallingMode: llm.ToolCallingModeNative,
 	})
 	if err != nil {
 		return "", fmt.Errorf("generate rolling summary: %w", err)

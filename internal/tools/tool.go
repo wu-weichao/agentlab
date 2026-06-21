@@ -58,6 +58,7 @@ type ToolSpec struct {
 // 该结构是仓库内部协议，不绑定 OpenAI 等 provider 的私有 tool schema；
 // provider 适配层后续可以把原生 tool call 转换成此结构。
 type ToolCall struct {
+	ID        string         `json:"id,omitempty"`
 	ToolName  string         `json:"tool_name"`
 	Arguments map[string]any `json:"arguments"`
 	Reason    string         `json:"reason,omitempty"`

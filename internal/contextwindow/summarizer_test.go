@@ -78,8 +78,8 @@ type scriptedClient struct {
 	calls     [][]llm.Message
 }
 
-func (c *scriptedClient) Chat(_ context.Context, messages []llm.Message) (*llm.ChatResponse, error) {
-	c.calls = append(c.calls, append([]llm.Message(nil), messages...))
+func (c *scriptedClient) Chat(_ context.Context, request llm.ChatRequest) (*llm.ChatResponse, error) {
+	c.calls = append(c.calls, append([]llm.Message(nil), request.Messages...))
 	if len(c.responses) == 0 {
 		return nil, errors.New("no scripted response")
 	}
