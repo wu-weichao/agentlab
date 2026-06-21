@@ -421,3 +421,50 @@ runCache 执行思路：
 - 引入结构化 `RunResult` 和 `RunStep`，让调用方无需解析日志即可获得本轮执行轨迹。
 - 统一模型调用、工具调用、缓存复用、耗时和错误分类。
 - 在结构化运行轨迹稳定后设计工具风险等级、授权回调和高风险工具安全策略。
+
+## v0.0.10 structured-run-trace
+
+目标：把一次 Agent 运行从仅能通过日志排查的过程提升为调用方可直接消费的结构化数据，同时保持现有简单运行接口、工具协议和会话语义稳定。
+
+新增：
+
+- `Agent.RunWithTrace(ctx, input)` 结构化运行入口，返回 `RunResult` 和原始 Go error。
+- `RunResult`，包含 request ID、最终回答、步骤数组、总步骤数、总耗时和稳定终止原因。
+- `RunStep`，区分 `model_call`、`tool_call`、`cache_reuse` 和 `final_answer`。
+- 模型步骤记录工具调用模式、操作阶段、耗时、成功状态和模型错误分类。
+- 工具步骤记录工具名、tool call key、cache hit、结果正文、诊断 metadata、执行耗时和工具错误分类。
+- 稳定终止分类，覆盖完成、上下文错误、模型错误、工具 Runtime 错误、非法工具调用和 MaxSteps 超限。
+- 结构化运行、缓存 metadata 隔离、失败部分轨迹、日志关联和数据边界测试。
+
+实现思路：
+
+- `Agent.Run()` 委托 `RunWithTrace()`，成功时只返回 `FinalAnswer`，失败时原样返回错误，避免维护两套 Runtime 流程。
+- 每次结构化运行创建进程内 trace recorder，按实际发生顺序生成从 1 开始的 index 和 request 内唯一 step ID。
+- LLM client 通过 Agent 内部轻量包装统一记录主工具循环和摘要阶段的模型调用，不修改 provider 接口。
+- 真实工具执行只记录 `tool_call`；runCache 命中只记录 `cache_reuse`，不会伪装成第二次真实执行。
+- ToolResult 和 metadata 在缓存、工具反馈和轨迹之间做防御性复制，避免后续 cache hit 更新当前步骤诊断时污染先前步骤。
+- 总耗时覆盖上下文准备、摘要、模型和工具循环；步骤耗时只覆盖对应模型调用、真实工具执行或缓存复用边界。
+- 失败运行仍返回已收集的部分 RunResult，并使用稳定终止原因；调用方不需要匹配错误字符串。
+
+可观测性：
+
+- 每个模型、工具、缓存和最终回答步骤都包含 request ID 与 step ID。
+- 对应运行日志增加同一 `step_id`，可以从结构化步骤定位完整学习日志。
+- 既有工具循环 `step`、`max_steps`、tool call key、cache hit、success 和 error code 字段保持原有含义。
+- 工具正文与诊断 metadata 在 RunStep 中分离，调用方可独立处理业务结果和执行诊断。
+- `RunResult.TotalSteps` 与步骤数组长度一致，并返回整个运行的总耗时和终止原因。
+
+当前边界：
+
+- 轨迹只存在于当前 `RunWithTrace()` 返回值，不写入 Session、rolling summary、文件或数据库。
+- 不接入 OpenTelemetry、指标平台或外部 tracing 系统。
+- 不暴露 provider 的 reasoning、thinking 或其他隐藏推理字段，只保存用户可见最终回答。
+- 轨迹可以包含完整工具正文和 metadata；调用方如果持久化，需要自行评估脱敏和存储边界。
+- 当前步骤模型是顺序扁平列表，不支持并行步骤、父子 span 或嵌套工作流。
+- 不改变 native/text compatibility、单步单工具、MaxSteps、runCache 生命周期和 Tool 接口。
+
+下一步：
+
+- 基于稳定运行轨迹设计工具风险等级、授权回调、拒绝原因和高风险工具安全策略。
+- 在出现实际导出需求后，再设计轨迹序列化、脱敏、截断和持久化接口。
+- 当 Workflow 或并行执行落地时，再评估父子步骤、事件流和 span 关系。

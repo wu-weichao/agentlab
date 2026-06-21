@@ -41,16 +41,17 @@ func New(options Options) *Agent {
 	if options.Executor == nil {
 		options.Executor = tools.NewDefaultExecutorForCurrentWorkspace(nil)
 	}
+	tracedClient := tracingClient{delegate: options.Client}
 	mode, err := llm.ParseToolCallingMode(string(options.ToolCallingMode))
 	if err != nil {
 		mode = llm.DefaultToolCallingMode
 	}
 	options.Session.AppendSystemPromptSection(buildToolInstructions(options.Executor, mode))
 	return &Agent{
-		client:          options.Client,
+		client:          tracedClient,
 		session:         options.Session,
 		builder:         contextwindow.NewBuilder(),
-		summarizer:      contextwindow.NewSummarizer(options.Client),
+		summarizer:      contextwindow.NewSummarizer(tracedClient),
 		contextCfg:      options.ContextConfig,
 		executor:        options.Executor,
 		toolLoopOptions: normalizeToolLoopOptions(options.ToolLoopOptions),
@@ -60,7 +61,18 @@ func New(options Options) *Agent {
 
 // Run 执行一轮对话：记录用户输入，调用模型和受控工具循环，再把最终回复写回会话。
 func (b *Agent) Run(ctx context.Context, input string) (string, error) {
+	result, err := b.RunWithTrace(ctx, input)
+	if err != nil {
+		return "", err
+	}
+	return result.FinalAnswer, nil
+}
+
+// RunWithTrace 执行一轮对话，并返回当前运行的结构化步骤轨迹。
+func (b *Agent) RunWithTrace(ctx context.Context, input string) (RunResult, error) {
 	ctx, requestID := requestctx.WithNewRequestID(ctx)
+	recorder := newTraceRecorder(requestID)
+	ctx = withTraceRecorder(ctx, recorder)
 	trimmed := strings.TrimSpace(input)
 	log.Printf("[agent] request_id=%s 收到用户输入，长度=%d", requestID, len(trimmed))
 
@@ -70,18 +82,32 @@ func (b *Agent) Run(ctx context.Context, input string) (string, error) {
 	buildResult, err := b.prepareRequest(ctx)
 	if err != nil {
 		log.Printf("[agent] request_id=%s 上下文构建失败: %v", requestID, err)
-		return "", err
+		return recorder.result("", TerminationContextError), err
 	}
 
 	runCache := map[tools.ToolCallKey]tools.ToolResult{}
 	resp, err := b.runToolLoop(ctx, buildResult.Messages, runCache)
 	if err != nil {
 		log.Printf("[agent] request_id=%s 工具循环失败: %v", requestID, err)
-		return "", err
+		return recorder.result("", terminationReasonForError(err)), err
 	}
 	b.session.AddAssistantMessage(resp.Content)
 	log.Printf("[agent] request_id=%s 本轮对话完成，回复长度=%d", requestID, len(resp.Content))
-	return resp.Content, nil
+	return recorder.result(resp.Content, TerminationCompleted), nil
+}
+
+func terminationReasonForError(err error) TerminationReason {
+	switch {
+	case errors.Is(err, ErrToolLoopExceeded):
+		return TerminationMaxStepsExceeded
+	case errors.Is(err, tools.ErrMultipleToolCalls),
+		errors.Is(err, tools.ErrInvalidArguments):
+		return TerminationInvalidToolCall
+	case errors.Is(err, errToolRuntime):
+		return TerminationToolError
+	default:
+		return TerminationModelError
+	}
 }
 
 // prepareRequest 负责把“无限增长的会话状态”整理成一次可发送的受控上下文。

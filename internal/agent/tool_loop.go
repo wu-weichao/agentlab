@@ -8,6 +8,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"agentlab/internal/llm"
 	"agentlab/internal/requestctx"
@@ -23,10 +24,14 @@ type ToolLoopOptions struct {
 }
 
 type toolExecutionResult struct {
-	Result   tools.ToolResult
-	Key      tools.ToolCallKey
-	CacheHit bool
+	Result    tools.ToolResult
+	Key       tools.ToolCallKey
+	CacheHit  bool
+	StartedAt time.Time
+	Duration  time.Duration
 }
+
+var errToolRuntime = errors.New("tool runtime error")
 
 func normalizeToolLoopOptions(options ToolLoopOptions) ToolLoopOptions {
 	if options.MaxSteps <= 0 {
@@ -124,7 +129,7 @@ func (b *Agent) runToolLoop(
 		if b.toolCallingMode == llm.ToolCallingModeNative {
 			request.Tools = b.executor.Specs()
 		}
-		resp, err := b.client.Chat(ctx, request)
+		resp, err := b.client.Chat(withModelOperation(ctx, "agent_loop"), request)
 		if err != nil {
 			log.Printf("[agent] request_id=%s 模型调用失败 step=%d: %v", requestctx.FromContext(ctx), step, err)
 			return nil, err
@@ -132,6 +137,19 @@ func (b *Agent) runToolLoop(
 
 		call, err := b.toolCallFromResponse(resp)
 		if errors.Is(err, tools.ErrToolCallNotPresent) {
+			finalStep := addTraceStep(ctx, RunStep{
+				Type:      RunStepFinalAnswer,
+				Success:   true,
+				Content:   resp.Content,
+				StartedAt: time.Now(),
+			})
+			log.Printf(
+				"[agent] request_id=%s step_id=%s run_step=%s success=true content_chars=%d",
+				requestctx.FromContext(ctx),
+				finalStep.StepID,
+				finalStep.Type,
+				len(resp.Content),
+			)
 			return resp, nil
 		}
 		if errors.Is(err, tools.ErrMultipleToolCalls) {
@@ -153,13 +171,47 @@ func (b *Agent) runToolLoop(
 		)
 		execution, err := executeToolWithRunCache(ctx, b.executor, *call, runCache)
 		if err != nil {
-			return nil, err
+			failedStep := addTraceStep(ctx, RunStep{
+				Type:      RunStepToolCall,
+				StartedAt: time.Now(),
+				Success:   false,
+				ErrorCode: RunErrorTool,
+				ToolName:  call.ToolName,
+				CacheHit:  false,
+				Duration:  0,
+			})
+			log.Printf(
+				"[agent] request_id=%s step_id=%s run_step=%s tool_name=%s success=false error_code=%s",
+				requestctx.FromContext(ctx),
+				failedStep.StepID,
+				failedStep.Type,
+				call.ToolName,
+				failedStep.ErrorCode,
+			)
+			return nil, fmt.Errorf("%w: %w", errToolRuntime, err)
 		}
 		result := withToolLoopDiagnostics(execution.Result, step, execution.CacheHit, execution.Key)
-		logToolLoopStep(ctx, step, maxSteps, call.ToolName, execution.Key, execution.CacheHit, result)
+		stepType := RunStepToolCall
+		if execution.CacheHit {
+			stepType = RunStepCacheReuse
+		}
+		traceStep := addTraceStep(ctx, RunStep{
+			Type:        stepType,
+			StartedAt:   execution.StartedAt,
+			Duration:    execution.Duration,
+			Success:     result.Success,
+			ErrorCode:   runErrorCodeForToolResult(result),
+			ToolName:    call.ToolName,
+			ToolCallKey: formatToolCallKey(execution.Key),
+			CacheHit:    execution.CacheHit,
+			Content:     result.Content,
+			Metadata:    result.Metadata,
+		})
+		logToolLoopStep(ctx, traceStep.StepID, step, maxSteps, call.ToolName, execution.Key, execution.CacheHit, result)
 		log.Printf(
-			"[agent] request_id=%s 工具执行完成 step=%d/%d tool=%s success=%t error=%q tool_result_json=%s",
+			"[agent] request_id=%s step_id=%s 工具执行完成 step=%d/%d tool=%s success=%t error=%q tool_result_json=%s",
 			requestctx.FromContext(ctx),
+			traceStep.StepID,
 			step,
 			maxSteps,
 			call.ToolName,
@@ -206,6 +258,7 @@ func executeToolWithRunCache(
 	call tools.ToolCall,
 	runCache map[tools.ToolCallKey]tools.ToolResult,
 ) (toolExecutionResult, error) {
+	lookupStartedAt := time.Now()
 	if executor == nil {
 		return toolExecutionResult{}, errors.New("tool executor is not configured")
 	}
@@ -225,9 +278,11 @@ func executeToolWithRunCache(
 				len(runCache),
 			)
 			return toolExecutionResult{
-				Result:   result,
-				Key:      key,
-				CacheHit: true,
+				Result:    cloneToolResult(result),
+				Key:       key,
+				CacheHit:  true,
+				StartedAt: lookupStartedAt,
+				Duration:  time.Since(lookupStartedAt),
 			}, nil
 		}
 		log.Printf(
@@ -239,9 +294,11 @@ func executeToolWithRunCache(
 		)
 	}
 
+	executionStartedAt := time.Now()
 	result := executor.Execute(ctx, call)
+	executionDuration := time.Since(executionStartedAt)
 	if runCache != nil {
-		runCache[key] = result
+		runCache[key] = cloneToolResult(result)
 		log.Printf(
 			"[agent] request_id=%s tool_cache_store=true tool=%s args_hash=%s cache_entries=%d",
 			requestctx.FromContext(ctx),
@@ -251,9 +308,11 @@ func executeToolWithRunCache(
 		)
 	}
 	return toolExecutionResult{
-		Result:   result,
-		Key:      key,
-		CacheHit: false,
+		Result:    cloneToolResult(result),
+		Key:       key,
+		CacheHit:  false,
+		StartedAt: executionStartedAt,
+		Duration:  executionDuration,
 	}, nil
 }
 
@@ -299,6 +358,7 @@ func withToolLoopDiagnostics(result tools.ToolResult, step int, cacheHit bool, k
 
 func logToolLoopStep(
 	ctx context.Context,
+	stepID string,
 	step int,
 	maxSteps int,
 	toolName string,
@@ -307,8 +367,9 @@ func logToolLoopStep(
 	result tools.ToolResult,
 ) {
 	log.Printf(
-		"[agent] request_id=%s tool_loop_step=true step=%d max_steps=%d tool_name=%s tool_call_key=%s cache_hit=%t success=%t error_code=%s",
+		"[agent] request_id=%s step_id=%s tool_loop_step=true step=%d max_steps=%d tool_name=%s tool_call_key=%s cache_hit=%t success=%t error_code=%s",
 		requestctx.FromContext(ctx),
+		stepID,
 		step,
 		maxSteps,
 		toolName,
@@ -328,6 +389,13 @@ func toolResultErrorCode(result tools.ToolResult) string {
 		return ""
 	}
 	return "tool_error"
+}
+
+func runErrorCodeForToolResult(result tools.ToolResult) RunErrorCode {
+	if result.Success {
+		return RunErrorNone
+	}
+	return RunErrorTool
 }
 
 func formatToolResultLogJSON(result tools.ToolResult) string {
